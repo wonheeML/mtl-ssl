@@ -1,0 +1,35 @@
+jupyter>=1.0.0
+ipython>=5.0.0
+numpy>=1.11.1
+#scipy>=0.17.1
+matplotlib>=1.5.0
+easydict>=1.6
+pillow>=3.2.0
+scikit-learn>=0.17
+scikit-image>=0.11.3
+pandas>=0.17.1
+colorlog>=2.6.0
+colored>=1.2.2
+keras>=0.3.1
+h5py>=2.5.0
+Cython>=0.25.0
+nltk>=3.2
+tqdm>=4.8.2
+lxml>=3.8.0
+protobuf-to-dict>=0.1.0
+joblib>=0.11
+
+# TensorFlow 1.2 linux cpu
+# https://storage.googleapis.com/tensorflow/linux/cpu/tensorflow-1.2.1-cp36-cp36m-linux_x86_64.whl
+# TensorFlow 1.2 linux gpu
+https://storage.googleapis.com/tensorflow/linux/gpu/tensorflow_gpu-1.2.1-cp36-cp36m-linux_x86_64.whl
+# TensorFlow 1.2 win cpu
+# https://storage.googleapis.com/tensorflow/windows/cpu/tensorflow-1.2.1-cp36-cp36m-win_amd64.whl
+
+# Dev
+nose2>=0.6.5
+green>=2.5.1
+ipdb>=0.10.1
+pudb>=2016.2
+
+# vim: set ft=config:
