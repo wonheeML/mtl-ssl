@@ -160,4 +160,16 @@ def _build_classification_loss(loss_config):
         bootstrap_type=('hard' if config.hard_bootstrap else 'soft'),
         anchorwise_output=config.anchorwise_output)
 
+  if loss_type == 'weighted_l2':
+    config = loss_config.weighted_l2
+    return losses.WeightedL2LocalizationLoss(
+        anchorwise_output=config.anchorwise_output)
+
+  if loss_type == 'weighted_smooth_l1':
+    config = loss_config.weighted_smooth_l1
+    return losses.WeightedSmoothL1LocalizationLoss(
+        anchorwise_output=config.anchorwise_output)
+
   raise ValueError('Empty loss config.')
+
+

@@ -178,13 +178,16 @@ def multi_resolution_feature_maps(feature_map_layout, depth_multiplier,
   return collections.OrderedDict(
       [(x, y) for (x, y) in zip(feature_map_keys, feature_maps)])
 
-def concatenate_feature_maps(image_features, layer_names):
+def concatenate_feature_maps(image_features, layer_names=None):
   """Generates single concatenated feature map from input image features.
 
   Args:
+    image_features: dicionary which contains feature maps.
     layer_names: List of layer names. Output feature map will be concatenated
       by its order.
   """
+  if layer_names is None:
+    layer_names = image_features.keys()
   base_feature_map = image_features[layer_names.pop()]
   _, base_h, base_w, _ = base_feature_map.get_shape().as_list()
 
@@ -194,7 +197,10 @@ def concatenate_feature_maps(image_features, layer_names):
     _, h, w, _ = feature_map.get_shape().as_list()
     assert h/base_h == w/base_w, "Ratios for height and width are different."
 
-    stretch_feature_map = tf.space_to_depth(feature_map, block_size=h/base_h)
+    if h == base_h:
+      stretch_feature_map = feature_map
+    else:
+      stretch_feature_map = tf.space_to_depth(feature_map, block_size=h/base_h)
     concat_feature_map = tf.concat(axis=3, values=[stretch_feature_map, concat_feature_map])
 
   return concat_feature_map

@@ -54,10 +54,6 @@ class GridAnchorGenerator(anchor_generator.AnchorGenerator):
                      feature networks with only VALID padding and even receptive
                      field size, but may need additional calculation if other
                      padding is used (length-2 float32 tensor, default=[0, 0])
-      use_hw_scales: XXX
-      height_scales: XXX
-      width_scales: XXX
-      align_lefttop: XXX
     """
     # Handle argument defaults
     if base_anchor_size is None:
@@ -185,10 +181,6 @@ def tile_anchors(grid_height,
                    feature networks with only VALID padding and even receptive
                    field size, but may need some additional calculation if other
                    padding is used (float tensor of shape [2])
-    use_hw_scales: XXX
-    height_scales: XXX
-    width_scales: XXX
-    align_lefttop: XXX
   Returns:
     a BoxList holding a collection of N anchor boxes
   """

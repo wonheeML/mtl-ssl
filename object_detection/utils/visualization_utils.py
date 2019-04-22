@@ -87,13 +87,54 @@ def encode_image_array_as_png_str(image):
   return png_string
 
 
+def put_text_on_image_array(image,
+                            text,
+                            left=0.0,
+                            top=0.0,
+                            color='white',
+                            use_normalized_coordinates=True,
+                            font_size=24):
+  image_pil = Image.fromarray(np.uint8(image)).convert('RGB')
+  put_text_on_image(image_pil, text, left, top, color,
+                    use_normalized_coordinates, font_size)
+  np.copyto(image, np.array(image_pil))
+
+
+def put_text_on_image(image,
+                      text,
+                      left=0.0,
+                      top=0.0,
+                      color='white',
+                      use_normalized_coordinates=True,
+                      font_size=24):
+  draw = ImageDraw.Draw(image)
+  im_width, im_height = image.size
+
+  font_path = '../../fonts/Ubuntu Mono derivative Powerline.ttf'
+  try:
+    font = ImageFont.truetype(font_path, font_size)
+  except IOError:
+    font = ImageFont.load_default()
+
+  text_width, text_height = font.getsize(text)
+  margin = np.ceil(0.05 * text_height)
+  draw.rectangle(
+      [(left, top), (left + text_width, top + text_height + 2 * margin)],
+      fill=color)
+  draw.text(
+      (left + margin, top + margin),
+      text,
+      fill='black',
+      font=font)
+
+
 def draw_bounding_box_on_image_array(image,
                                      ymin,
                                      xmin,
                                      ymax,
                                      xmax,
                                      color='red',
-                                     thickness=4,
+                                     thickness=2,
                                      display_str_list=(),
                                      use_normalized_coordinates=True,
                                      font_size=24):
@@ -127,7 +168,7 @@ def draw_bounding_box_on_image(image,
                                ymax,
                                xmax,
                                color='red',
-                               thickness=4,
+                               thickness=2,
                                display_str_list=(),
                                use_normalized_coordinates=True,
                                font_size=24):
@@ -162,33 +203,36 @@ def draw_bounding_box_on_image(image,
 
   font_path = '../../fonts/Ubuntu Mono derivative Powerline.ttf'
   try:
-    #font = ImageFont.truetype('arial.ttf', 200)
+    # font = ImageFont.truetype('arial.ttf', 200)
     font = ImageFont.truetype(font_path, font_size)
   except IOError:
     font = ImageFont.load_default()
 
   text_bottom = top
   # Reverse list and print from bottom to top.
-  for display_str in display_str_list[::-1]:
-    text_width, text_height = font.getsize(display_str)
-    margin = np.ceil(0.05 * text_height)
-    draw.rectangle(
-        [(left, text_bottom - text_height - 2 * margin), (left + text_width,
-                                                          text_bottom)],
-        fill=color)
-    draw.text(
-        (left + margin, text_bottom - text_height - margin),
-        display_str,
-        fill='black',
-        font=font)
-    text_bottom -= text_height - 2 * margin
+  if font_size > 0:
+    for display_str in display_str_list[::-1]:
+      text_width, text_height = font.getsize(display_str)
+      margin = np.ceil(0.05 * text_height)
+      draw.rectangle(
+          [(left, text_bottom - text_height - 2 * margin), (left + text_width,
+                                                            text_bottom)],
+          fill=color)
+
+      draw.text(
+          (left + margin, text_bottom - text_height - margin),
+          display_str,
+          fill='black',
+          font=font)
+      text_bottom -= text_height - 2 * margin
 
 
 def draw_bounding_boxes_on_image_array(image,
                                        boxes,
                                        color='red',
-                                       thickness=4,
-                                       display_str_list_list=()):
+                                       thickness=2,
+                                       display_str_list_list=(),
+                                       font_size=24):
   """Draws bounding boxes on image (numpy array).
 
   Args:
@@ -206,17 +250,19 @@ def draw_bounding_boxes_on_image_array(image,
   Raises:
     ValueError: if boxes is not a [N, 4] array
   """
-  image_pil = Image.fromarray(image)
+  # image_pil = Image.fromarray(image)
+  image_pil = Image.fromarray(np.uint8(image)).convert('RGB')
   draw_bounding_boxes_on_image(image_pil, boxes, color, thickness,
-                               display_str_list_list)
+                               display_str_list_list, font_size=font_size)
   np.copyto(image, np.array(image_pil))
 
 
 def draw_bounding_boxes_on_image(image,
                                  boxes,
                                  color='red',
-                                 thickness=4,
-                                 display_str_list_list=()):
+                                 thickness=2,
+                                 display_str_list_list=(),
+                                 font_size=24):
   """Draws bounding boxes on image.
 
   Args:
@@ -244,7 +290,8 @@ def draw_bounding_boxes_on_image(image,
     if display_str_list_list:
       display_str_list = display_str_list_list[i]
     draw_bounding_box_on_image(image, boxes[i, 0], boxes[i, 1], boxes[i, 2],
-                               boxes[i, 3], color, thickness, display_str_list)
+                               boxes[i, 3], color, thickness, display_str_list,
+                               font_size=font_size)
 
 
 def draw_keypoints_on_image_array(image,
@@ -337,7 +384,7 @@ def visualize_boxes_and_labels_on_image_array(image,
                                               max_boxes_to_draw=20,
                                               min_score_thresh=.5,
                                               agnostic_mode=False,
-                                              line_thickness=4,
+                                              line_thickness=2,
                                               font_size=24):
   """Overlay labeled boxes on an image with formatted scores and label names.
 
@@ -385,7 +432,8 @@ def visualize_boxes_and_labels_on_image_array(image,
       if keypoints is not None:
         box_to_keypoints_map[box].extend(keypoints[i])
       if scores is None:
-        box_to_color_map[box] = 'black'
+        box_to_color_map[box] = 'yellow'
+        box_to_display_str_map[box].append(str(i))
       else:
         if not agnostic_mode:
           if classes[i] in category_index.keys():

@@ -1,0 +1,11 @@
+syntax = "proto2";
+
+package object_detection.protos;
+
+import "object_detection/protos/hyperparams.proto";
+
+message MaskPredictor {
+  optional bool trainable                = 1 [default=true];
+  optional int32 kernel_size             = 2 [default=3];
+  optional Hyperparams conv_hyperparams  = 3;
+}

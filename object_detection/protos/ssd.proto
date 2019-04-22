@@ -62,4 +62,7 @@ message SsdFeatureExtractor {
 
   // Hyperparameters for the feature extractor.
   optional Hyperparams conv_hyperparams = 4;
+
+  // Whether to train or not (freeze).
+  optional bool trainable = 5 [default=true];
 }

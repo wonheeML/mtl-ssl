@@ -43,7 +43,7 @@ import tensorflow as tf
 from object_detection.core import box_predictor
 from object_detection.meta_architectures import faster_rcnn_meta_arch
 from object_detection.utils import ops
-
+from object_detection.core import standard_fields as fields
 
 class RFCNMetaArch(faster_rcnn_meta_arch.FasterRCNNMetaArch):
   """R-FCN Meta-architecture definition."""
@@ -55,7 +55,9 @@ class RFCNMetaArch(faster_rcnn_meta_arch.FasterRCNNMetaArch):
                feature_extractor,
                first_stage_only,
                first_stage_anchor_generator,
+               first_stage_clip_window,
                first_stage_atrous_rate,
+               first_stage_box_predictor_trainable,
                first_stage_box_predictor_arg_scope,
                first_stage_box_predictor_kernel_size,
                first_stage_box_predictor_depth,
@@ -74,6 +76,11 @@ class RFCNMetaArch(faster_rcnn_meta_arch.FasterRCNNMetaArch):
                second_stage_localization_loss_weight,
                second_stage_classification_loss_weight,
                hard_example_miner,
+               mtl,
+               mtl_refiner_arg_scope,
+               window_box_predictor,
+               closeness_box_predictor,
+               edgemask_predictor,
                parallel_iterations=16):
     """RFCNMetaArch Constructor.
 
@@ -158,35 +165,43 @@ class RFCNMetaArch(faster_rcnn_meta_arch.FasterRCNNMetaArch):
         grid_anchor_generator.GridAnchorGenerator.
     """
     super(RFCNMetaArch, self).__init__(
-        is_training,
-        num_classes,
-        image_resizer_fn,
-        feature_extractor,
-        first_stage_only,
-        first_stage_anchor_generator,
-        first_stage_atrous_rate,
-        first_stage_box_predictor_arg_scope,
-        first_stage_box_predictor_kernel_size,
-        first_stage_box_predictor_depth,
-        first_stage_minibatch_size,
-        first_stage_positive_balance_fraction,
-        first_stage_nms_score_threshold,
-        first_stage_nms_iou_threshold,
-        first_stage_max_proposals,
-        first_stage_localization_loss_weight,
-        first_stage_objectness_loss_weight,
-        None,  # initial_crop_size is not used in R-FCN
-        None,  # maxpool_kernel_size is not use in R-FCN
-        None,  # maxpool_stride is not use in R-FCN
-        None,  # fully_connected_box_predictor is not used in R-FCN.
-        second_stage_batch_size,
-        second_stage_balance_fraction,
-        second_stage_non_max_suppression_fn,
-        second_stage_score_conversion_fn,
-        second_stage_localization_loss_weight,
-        second_stage_classification_loss_weight,
-        hard_example_miner,
-        parallel_iterations)
+      is_training,
+      num_classes,
+      image_resizer_fn,
+      feature_extractor,
+      first_stage_only,
+      first_stage_anchor_generator,
+      first_stage_clip_window,
+      first_stage_atrous_rate,
+      first_stage_box_predictor_trainable,
+      first_stage_box_predictor_arg_scope,
+      first_stage_box_predictor_kernel_size,
+      first_stage_box_predictor_depth,
+      first_stage_minibatch_size,
+      first_stage_positive_balance_fraction,
+      first_stage_nms_score_threshold,
+      first_stage_nms_iou_threshold,
+      first_stage_max_proposals,
+      first_stage_localization_loss_weight,
+      first_stage_objectness_loss_weight,
+      None,  # initial_crop_size is not used in R-FCN
+      None,  # maxpool_kernel_size is not use in R-FCN
+      None,  # maxpool_stride is not use in R-FCN
+      None,  # fully_connected_box_predictor is not used in R-FCN.
+      second_stage_batch_size,
+      second_stage_balance_fraction,
+      second_stage_non_max_suppression_fn,
+      second_stage_score_conversion_fn,
+      second_stage_localization_loss_weight,
+      second_stage_classification_loss_weight,
+      hard_example_miner,
+      mtl_refiner_arg_scope,
+      mtl,
+      window_box_predictor=window_box_predictor,
+      closeness_box_predictor=closeness_box_predictor,
+      edgemask_predictor=edgemask_predictor,
+      parallel_iterations=parallel_iterations
+    )
 
     self._rfcn_box_predictor = second_stage_rfcn_box_predictor
 
@@ -233,9 +248,17 @@ class RFCNMetaArch(faster_rcnn_meta_arch.FasterRCNNMetaArch):
           [batch_size, self.max_num_proposals, 4] representing
           decoded proposal bounding boxes (in absolute coordinates).
     """
+    mtl = self._mtl
     proposal_boxes_normalized, _, num_proposals = self._postprocess_rpn(
         rpn_box_encodings, rpn_objectness_predictions_with_background,
         anchors, image_shape)
+
+    if mtl.shared_feature == 'proposal_feature_maps':
+      if mtl.stop_gradient_for_aux_tasks:
+        mtl_proposal_feature_maps = tf.identity(rpn_features)
+        mtl_proposal_feature_maps = tf.stop_gradient(mtl_proposal_feature_maps)
+      else:
+        mtl_proposal_feature_maps = rpn_features
 
     box_classifier_features = (
         self._feature_extractor.extract_box_classifier_features(
@@ -262,6 +285,98 @@ class RFCNMetaArch(faster_rcnn_meta_arch.FasterRCNNMetaArch):
         'class_predictions_with_background':
         class_predictions_with_background,
         'num_proposals': num_proposals,
+        'proposal_boxes_normalized': proposal_boxes_normalized,
         'proposal_boxes': absolute_proposal_boxes,
     }
+
+    if mtl.shared_feature == 'classifier_feature_maps':
+      if mtl.stop_gradient_for_aux_tasks:
+        mtl_feature = tf.identity(box_classifier_features)
+        mtl_feature = tf.stop_gradient(mtl_feature)
+      else:
+        mtl_feature = box_classifier_features
+
+    if mtl.closeness:
+      if mtl.shared_feature == 'proposal_feature_maps':
+        scope = self.closeness_box_predictor_scope
+        mtl_feature = (self._feature_extractor.extract_box_classifier_features(
+          mtl_proposal_feature_maps, scope=scope))
+      closeness_box_predictions = self._closeness_box_predictor.predict_class(
+        mtl_feature, scope=self.closeness_box_predictor_scope, proposal_boxes=proposal_boxes_normalized)
+      closeness_predictions = tf.squeeze(closeness_box_predictions[
+        box_predictor.CLASS_PREDICTIONS], axis=1)
+      prediction_dict['closeness_predictions'] = closeness_predictions
+
+    return prediction_dict
+
+  def predict_with_window(self, prediction_dict, window_boxes_normalized=None):
+    """Predicts the output tensors from 2nd stage of FasterRCNN.
+
+    Args:
+      rpn_box_encodings: 4-D float tensor of shape
+        [batch_size, num_valid_anchors, self._box_coder.code_size] containing
+        predicted boxes.
+      rpn_objectness_predictions_with_background: 2-D float tensor of shape
+        [batch_size, num_valid_anchors, 2] containing class
+        predictions (logits) for each of the anchors.  Note that this
+        tensor *includes* background class predictions (at class index 0).
+      rpn_features: A 4-D float32 tensor with shape
+        [batch_size, height, width, depth] representing image features from the
+        RPN.
+      anchors: 2-D float tensor of shape
+        [num_anchors, self._box_coder.code_size].
+      image_shape: A 1D int32 tensors of size [4] containing the image shape.
+
+    Returns:
+      prediction_dict: a dictionary holding "raw" prediction tensors:
+        1) refined_box_encodings: a 3-D tensor with shape
+          [total_num_proposals, num_classes, 4] representing predicted
+          (final) refined box encodings, where
+          total_num_proposals=batch_size*self._max_num_proposals
+        2) class_predictions_with_background: a 3-D tensor with shape
+          [total_num_proposals, num_classes + 1] containing class
+          predictions (logits) for each of the anchors, where
+          total_num_proposals=batch_size*self._max_num_proposals.
+          Note that this tensor *includes* background class predictions
+          (at class index 0).
+        3) num_proposals: An int32 tensor of shape [batch_size] representing the
+          number of proposals generated by the RPN.  `num_proposals` allows us
+          to keep track of which entries are to be treated as zero paddings and
+          which are not since we always pad the number of proposals to be
+          `self.max_num_proposals` for each image.
+        4) proposal_boxes: A float32 tensor of shape
+          [batch_size, self.max_num_proposals, 4] representing
+          decoded proposal bounding boxes (in absolute coordinates).
+    """
+    mtl = self._mtl
+    if window_boxes_normalized == None:
+      window_boxes_normalized = tf.stack(
+          self.window_lists(fields.BoxListFields.boxes))
+    rpn_features = prediction_dict['rpn_features_to_crop']
+
+    if mtl.stop_gradient_for_aux_tasks and mtl.shared_feature == 'proposal_feature_maps':
+      rpn_features = tf.identity(rpn_features)
+      rpn_features = tf.stop_gradient(rpn_features)
+
+    if mtl.shared_feature == 'proposal_feature_maps':
+      scope = self.window_box_predictor_scope
+    else:
+      scope = self.window_box_predictor_scope
+
+    window_box_classifier_features = (
+      self._feature_extractor.extract_box_classifier_features(rpn_features, scope=scope))
+
+    if mtl.stop_gradient_for_aux_tasks and mtl.shared_feature == 'classifier_feature_maps':
+      window_box_classifier_features = tf.stop_gradient(window_box_classifier_features)
+
+    window_box_predictions = self._window_box_predictor.predict_class(
+      window_box_classifier_features,
+      scope=self.window_box_predictor_scope,
+      proposal_boxes=window_boxes_normalized)
+
+    window_class_predictions = tf.squeeze(
+      window_box_predictions[box_predictor.CLASS_PREDICTIONS],
+      axis=1)
+
+    prediction_dict['window_class_predictions'] = window_class_predictions
     return prediction_dict

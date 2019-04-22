@@ -66,7 +66,12 @@ anchors and proposal_boxes are both represented as absolute coordinates.
 TODO: Support TPU implementations and sigmoid loss.
 """
 from abc import abstractmethod
+from copy import deepcopy
 from functools import partial
+
+import re
+import collections
+import numpy as np
 import tensorflow as tf
 
 from object_detection.anchor_generators import grid_anchor_generator
@@ -74,6 +79,7 @@ from object_detection.core import balanced_positive_negative_sampler as sampler
 from object_detection.core import box_list
 from object_detection.core import box_list_ops
 from object_detection.core import box_predictor
+from object_detection.core import mask_predictor
 from object_detection.core import losses
 from object_detection.core import model
 from object_detection.core import post_processing
@@ -81,6 +87,7 @@ from object_detection.core import standard_fields as fields
 from object_detection.core import target_assigner
 from object_detection.utils import ops
 from object_detection.utils import shape_utils
+from global_utils.custom_utils import log
 
 slim = tf.contrib.slim
 
@@ -91,7 +98,7 @@ class FasterRCNNFeatureExtractor(object):
   def __init__(self,
                is_training,
                first_stage_features_stride,
-               reuse_weights=None,
+               reuse_weights=tf.AUTO_REUSE,
                weight_decay=0.0):
     """Constructor.
 
@@ -182,6 +189,21 @@ class FasterRCNNFeatureExtractor(object):
           variables_to_restore[var_name] = variable
     return variables_to_restore
 
+  def mtl_restore_from_classification_checkpoint_fn(
+      self, scope_name):
+    """Returns a map of variables to load from a foreign checkpoint.
+
+    Returns:
+      A dict mapping variable names (to load from a checkpoint) to variables in
+      the model graph.
+    """
+    variables_to_restore = {}
+    for variable in tf.global_variables():
+      if variable.op.name.startswith(scope_name):
+        var_name = variable.op.name.replace(scope_name + '/', '')
+        variables_to_restore[var_name] = variable
+    return variables_to_restore
+
 
 class FasterRCNNMetaArch(model.DetectionModel):
   """Faster R-CNN Meta-architecture definition."""
@@ -193,7 +215,9 @@ class FasterRCNNMetaArch(model.DetectionModel):
                feature_extractor,
                first_stage_only,
                first_stage_anchor_generator,
+               first_stage_clip_window,
                first_stage_atrous_rate,
+               first_stage_box_predictor_trainable,
                first_stage_box_predictor_arg_scope,
                first_stage_box_predictor_kernel_size,
                first_stage_box_predictor_depth,
@@ -215,7 +239,13 @@ class FasterRCNNMetaArch(model.DetectionModel):
                second_stage_localization_loss_weight,
                second_stage_classification_loss_weight,
                hard_example_miner,
-               parallel_iterations=16):
+               mtl_refiner_arg_scope,
+               mtl=None,
+               window_box_predictor=None,
+               closeness_box_predictor=None,
+               edgemask_predictor=None,
+               parallel_iterations=16
+               ):
     """FasterRCNNMetaArch Constructor.
 
     Args:
@@ -332,7 +362,10 @@ class FasterRCNNMetaArch(model.DetectionModel):
 
     # (First stage) Region proposal network parameters
     self._first_stage_anchor_generator = first_stage_anchor_generator
+    self._first_stage_clip_window = first_stage_clip_window
     self._first_stage_atrous_rate = first_stage_atrous_rate
+    self._first_stage_box_predictor_trainable = \
+        first_stage_box_predictor_trainable
     self._first_stage_box_predictor_arg_scope = (
         first_stage_box_predictor_arg_scope)
     self._first_stage_box_predictor_kernel_size = (
@@ -342,18 +375,21 @@ class FasterRCNNMetaArch(model.DetectionModel):
     self._first_stage_sampler = sampler.BalancedPositiveNegativeSampler(
         positive_fraction=first_stage_positive_balance_fraction)
     self._first_stage_box_predictor = box_predictor.ConvolutionalBoxPredictor(
-        self._is_training, num_classes=1,
+        self._is_training and first_stage_box_predictor_trainable,
+        num_classes=1,
         conv_hyperparams=self._first_stage_box_predictor_arg_scope,
         min_depth=0, max_depth=0, num_layers_before_predictor=0,
         use_dropout=False, dropout_keep_prob=1.0, kernel_size=1,
         box_code_size=self._box_coder.code_size)
+
+    self._mtl_refiner_arg_scope = mtl_refiner_arg_scope
 
     self._first_stage_nms_score_threshold = first_stage_nms_score_threshold
     self._first_stage_nms_iou_threshold = first_stage_nms_iou_threshold
     self._first_stage_max_proposals = first_stage_max_proposals
 
     self._first_stage_localization_loss = (
-        losses.WeightedSmoothL1LocalizationLoss(anchorwise_output=True))
+        losses.WeightedSmoothL1LocalizationLoss(anchorwise_output=True, sigma=3.0))
     self._first_stage_objectness_loss = (
         losses.WeightedSoftmaxClassificationLoss(anchorwise_output=True))
     self._first_stage_loc_loss_weight = first_stage_localization_loss_weight
@@ -382,6 +418,16 @@ class FasterRCNNMetaArch(model.DetectionModel):
     self._hard_example_miner = hard_example_miner
     self._parallel_iterations = parallel_iterations
 
+    # Mullti Tasks parmaeters
+    self._mtl = mtl
+    self._window_box_predictor = window_box_predictor
+    self._closeness_box_predictor = closeness_box_predictor
+    self._edgemask_predictor = edgemask_predictor
+
+    self._window_class_loss = losses.WeightedSoftmaxClassificationLoss_v2(anchorwise_output=True)
+    self._closeness_loss = losses.WeightedSoftmaxClassificationLoss_v2(anchorwise_output=True)
+    self._edgemask_loss = losses.WeightedSoftmaxClassificationLoss_v2(anchorwise_output=True)
+
   @property
   def first_stage_feature_extractor_scope(self):
     return 'FirstStageFeatureExtractor'
@@ -397,6 +443,22 @@ class FasterRCNNMetaArch(model.DetectionModel):
   @property
   def second_stage_box_predictor_scope(self):
     return 'SecondStageBoxPredictor'
+
+  @property
+  def window_box_predictor_scope(self):
+    return 'WindowBoxPredictor'
+
+  @property
+  def edgemask_predictor_scope(self):
+    return 'EdgeMaskPredictor'
+
+  @property
+  def closeness_box_predictor_scope(self):
+    return 'ClosenessBoxPredictor'
+
+  @property
+  def mtl_refiner_scope(self):
+    return 'MTLClassRefiner'
 
   @property
   def max_num_proposals(self):
@@ -517,7 +579,8 @@ class FasterRCNNMetaArch(model.DetectionModel):
     # The Faster R-CNN paper recommends pruning anchors that venture outside
     # the image window at training time and clipping at inference time.
     clip_window = tf.to_float(tf.stack([0, 0, image_shape[1], image_shape[2]]))
-    if self._is_training:
+
+    if self._is_training and not self._first_stage_clip_window:
       (rpn_box_encodings, rpn_objectness_predictions_with_background,
        anchors_boxlist) = self._remove_invalid_anchors_and_predictions(
            rpn_box_encodings, rpn_objectness_predictions_with_background,
@@ -591,13 +654,23 @@ class FasterRCNNMetaArch(model.DetectionModel):
           [total_num_padded_proposals, num_classes, mask_height, mask_width]
           containing instance mask predictions.
     """
+    mtl = self._mtl
     proposal_boxes_normalized, _, num_proposals = self._postprocess_rpn(
         rpn_box_encodings, rpn_objectness_predictions_with_background,
         anchors, image_shape)
+    flatten_proposal_boxes_normalized = \
+        self._flatten_first_two_dimensions(proposal_boxes_normalized)
 
     flattened_proposal_feature_maps = (
         self._compute_second_stage_input_feature_maps(
             rpn_features_to_crop, proposal_boxes_normalized))
+
+    if mtl.shared_feature == 'proposal_feature_maps':
+      if mtl.stop_gradient_for_aux_tasks:
+        mtl_flattened_proposal_feature_maps = tf.identity(flattened_proposal_feature_maps)
+        mtl_flattened_proposal_feature_maps = tf.stop_gradient(mtl_flattened_proposal_feature_maps)
+      else:
+        mtl_flattened_proposal_feature_maps = flattened_proposal_feature_maps
 
     box_classifier_features = (
         self._feature_extractor.extract_box_classifier_features(
@@ -607,6 +680,7 @@ class FasterRCNNMetaArch(model.DetectionModel):
     box_predictions = self._mask_rcnn_box_predictor.predict(
         box_classifier_features,
         num_predictions_per_location=1,
+        boxes_normalized=flatten_proposal_boxes_normalized,
         scope=self.second_stage_box_predictor_scope)
     refined_box_encodings = tf.squeeze(
         box_predictions[box_predictor.BOX_ENCODINGS], axis=1)
@@ -618,11 +692,157 @@ class FasterRCNNMetaArch(model.DetectionModel):
 
     prediction_dict = {
         'refined_box_encodings': refined_box_encodings,
-        'class_predictions_with_background':
-        class_predictions_with_background,
+        'class_predictions_with_background': class_predictions_with_background,
         'num_proposals': num_proposals,
         'proposal_boxes': absolute_proposal_boxes,
+        'proposal_boxes_normalized': proposal_boxes_normalized
     }
+
+    if mtl.shared_feature == 'classifier_feature_maps':
+      if mtl.stop_gradient_for_aux_tasks:
+        mtl_feature = tf.identity(box_classifier_features)
+        mtl_feature = tf.stop_gradient(mtl_feature)
+      else:
+        mtl_feature = box_classifier_features
+
+    if mtl.closeness:
+      if mtl.shared_feature == 'proposal_feature_maps':
+        scope = self.closeness_box_predictor_scope
+        mtl_feature = (self._feature_extractor.extract_box_classifier_features(
+          mtl_flattened_proposal_feature_maps, scope=scope))
+      closeness_box_predictions = self._closeness_box_predictor.predict_class(
+        mtl_feature, scope=self.closeness_box_predictor_scope)
+      closeness_predictions = tf.squeeze(closeness_box_predictions[
+        box_predictor.CLASS_PREDICTIONS], axis=1)
+      prediction_dict['closeness_predictions'] = closeness_predictions
+
+    return prediction_dict
+
+  def predict_with_window(self, prediction_dict, window_boxes_normalized=None):
+    # expanded gt box
+    mtl = self._mtl
+    if window_boxes_normalized == None:
+      window_boxes_normalized = tf.stack(
+          self.window_lists(fields.BoxListFields.boxes))
+    rpn_features_to_crop = prediction_dict['rpn_features_to_crop']
+    flattened_window_input_feature_maps = (
+        self._compute_second_stage_input_feature_maps(
+            rpn_features_to_crop, window_boxes_normalized))
+
+    if mtl.stop_gradient_for_aux_tasks and mtl.shared_feature == 'proposal_feature_maps':
+      flattened_window_input_feature_maps = tf.stop_gradient(flattened_window_input_feature_maps)
+
+    if mtl.shared_feature == 'proposal_feature_maps':
+      scope = self.window_box_predictor_scope
+    else:
+      scope = self.second_stage_feature_extractor_scope
+    window_box_classifier_features = (
+        self._feature_extractor.extract_box_classifier_features(
+            flattened_window_input_feature_maps,
+            scope=scope))
+
+    if mtl.stop_gradient_for_aux_tasks and mtl.shared_feature == 'classifier_feature_maps':
+      window_box_classifier_features = tf.stop_gradient(window_box_classifier_features)
+
+    window_box_predictions = self._window_box_predictor.predict_class(
+        window_box_classifier_features,
+        activation_fn=None,
+        scope=self.window_box_predictor_scope)
+    window_class_predictions = tf.squeeze(window_box_predictions[
+        box_predictor.CLASS_PREDICTIONS], axis=1)
+    prediction_dict['window_class_predictions'] = \
+        window_class_predictions
+    return prediction_dict
+
+  def predict_edgemask(self, prediction_dict):
+    input_feature = prediction_dict['rpn_features_to_crop']
+    edgemask_predictions = self._edgemask_predictor.predict(
+      input_feature, scope=self.edgemask_predictor_scope)
+    prediction_dict['edgemask_predictions'] = edgemask_predictions[mask_predictor.MASK_PREDICTIONS]
+    return prediction_dict
+
+  def predict_with_mtl_results(self, prediction_dict):
+    mtl = self._mtl
+    mtl_prediction_source = []
+    prediction_org = prediction_dict['class_predictions_with_background']
+    if mtl.stop_gradient_for_prediction_org:
+      prediction_org = tf.stop_gradient(prediction_org)
+
+    mtl_prediction_source.append(prediction_org)
+
+    if mtl.window:
+      n_expand_window_for_refine = 4
+
+      y_min, x_min, y_max, x_max = tf.split(
+        prediction_dict['proposal_boxes_normalized'], num_or_size_splits=4, axis=2)
+
+      y_min_list = []
+      x_min_list = []
+      y_max_list = []
+      x_max_list = []
+      dx_neg = x_min / n_expand_window_for_refine
+      dx_pos = (1 - x_max) / n_expand_window_for_refine
+      dy_neg = y_min / n_expand_window_for_refine
+      dy_pos = (1 - y_max) / n_expand_window_for_refine
+
+      for i in range(n_expand_window_for_refine+1):
+        y_min_sub = y_min - dy_neg * i
+        x_min_sub = x_min - dx_neg * i
+        y_max_sub = y_max + dy_pos * i
+        x_max_sub = x_max + dx_pos * i
+        y_min_list.append(y_min_sub)
+        x_min_list.append(x_min_sub)
+        y_max_list.append(y_max_sub)
+        x_max_list.append(x_max_sub)
+
+      expand_window_boxes = tf.squeeze(tf.stack([y_min_list, x_min_list, y_max_list, x_max_list], axis=4), axis=3)
+      n_expand, n_batch, n_proposal, _ = expand_window_boxes.get_shape().as_list()
+      if n_batch == None:
+        n_batch = 1
+
+      flatten_expand_window_boxes = tf.reshape(expand_window_boxes, [1, n_expand * n_batch * n_proposal, 4])
+
+      window_prediction_dict = dict()
+      window_prediction_dict['rpn_features_to_crop'] = prediction_dict['rpn_features_to_crop']
+      window_prediction_dict = self.predict_with_window(window_prediction_dict, window_boxes_normalized=flatten_expand_window_boxes)
+      expand_window_class_predictions = window_prediction_dict['window_class_predictions']
+      expand_window_class_predictions = \
+        tf.reshape(expand_window_class_predictions, [n_expand, n_batch * n_proposal, -1])
+      expand_window_class_predictions = \
+        tf.transpose(expand_window_class_predictions, perm=[1,0,2])
+
+      prediction_dict['expand_window_class_predictions'] = \
+        expand_window_class_predictions
+
+    with tf.variable_scope(self.mtl_refiner_scope, reuse=False):
+      if mtl.window:
+        net = prediction_dict['expand_window_class_predictions']
+        net = tf.reshape(net, [n_proposal, -1])  # (64,5,21) to (64,105)
+        mtl_prediction_source.append(net)
+      if mtl.closeness:
+          net = prediction_dict['closeness_predictions']
+          if mtl.global_closeness:
+            n_batch = tf.shape(net)[0]
+            net = tf.reduce_mean(net, axis=0)
+            net = tf.expand_dims(net, 0)
+            net = tf.tile(net, [n_batch, 1])
+          mtl_prediction_source.append(net)
+
+      net = tf.concat(mtl_prediction_source, axis=1)
+      with slim.arg_scope(self._mtl_refiner_arg_scope):
+        n_features = net.get_shape().as_list()[-1]
+        net = tf.stop_gradient(net)
+        for i in range(mtl.refine_num_fc_layers):
+          net = slim.fully_connected(net, n_features, activation_fn=tf.nn.relu, scope='fc'+str(i+1))
+          if mtl.refine_dropout_rate < 1.0:
+            net = slim.dropout(net, mtl.refine_dropout_rate, is_training=self._is_training, scope='dropout'+str(i+1))
+        mtl_refined_class_predictions_with_background = \
+          slim.fully_connected(net, self.num_classes + 1, scope='fc' + str(mtl.refine_num_fc_layers + 1), activation_fn=None)
+
+      if mtl.refine_residue:
+        mtl_refined_class_predictions_with_background = mtl_refined_class_predictions_with_background + prediction_org
+
+    prediction_dict['mtl_refined_class_predictions_with_background'] = mtl_refined_class_predictions_with_background
     return prediction_dict
 
   def _extract_rpn_feature_maps(self, preprocessed_inputs):
@@ -654,14 +874,16 @@ class FasterRCNNMetaArch(model.DetectionModel):
     feature_map_shape = tf.shape(rpn_features_to_crop)
     anchors = self._first_stage_anchor_generator.generate(
         [(feature_map_shape[1], feature_map_shape[2])])
-    with slim.arg_scope(self._first_stage_box_predictor_arg_scope):
-      kernel_size = self._first_stage_box_predictor_kernel_size
-      rpn_box_predictor_features = slim.conv2d(
-          rpn_features_to_crop,
-          self._first_stage_box_predictor_depth,
-          kernel_size=[kernel_size, kernel_size],
-          rate=self._first_stage_atrous_rate,
-          activation_fn=tf.nn.relu6)
+    kernel_size = self._first_stage_box_predictor_kernel_size
+    with tf.variable_scope(self.first_stage_box_predictor_scope, reuse=tf.AUTO_REUSE):
+        with slim.arg_scope(self._first_stage_box_predictor_arg_scope):
+            rpn_box_predictor_features = slim.conv2d(
+                 rpn_features_to_crop,
+                self._first_stage_box_predictor_depth,
+                kernel_size=[kernel_size, kernel_size],
+                rate=self._first_stage_atrous_rate,
+                trainable=self._first_stage_box_predictor_trainable,
+            )
     return (rpn_box_predictor_features, rpn_features_to_crop,
             anchors, image_shape)
 
@@ -817,9 +1039,13 @@ class FasterRCNNMetaArch(model.DetectionModel):
         }
     with tf.name_scope('SecondStagePostprocessor'):
       mask_predictions = prediction_dict.get(box_predictor.MASK_PREDICTIONS)
+      if self._mtl.refine and 'mtl_refined_class_predictions_with_background' in prediction_dict.keys():
+        class_predictions_with_background = prediction_dict['mtl_refined_class_predictions_with_background']
+      else:
+        class_predictions_with_background = prediction_dict['class_predictions_with_background']
       detections_dict = self._postprocess_box_classifier(
           prediction_dict['refined_box_encodings'],
-          prediction_dict['class_predictions_with_background'],
+          class_predictions_with_background,
           prediction_dict['proposal_boxes'],
           prediction_dict['num_proposals'],
           image_shape,
@@ -989,7 +1215,7 @@ class FasterRCNNMetaArch(model.DetectionModel):
             tf.stack(single_image_proposal_score_sample),
             tf.stack(single_image_num_proposals_sample))
 
-  def _format_groundtruth_data(self, image_shape):
+  def _format_groundtruth_data(self, image_shape, with_background=True):
     """Helper function for preparing groundtruth data for target assignment.
 
     In order to be consistent with the model.DetectionModel interface,
@@ -1014,12 +1240,30 @@ class FasterRCNNMetaArch(model.DetectionModel):
         box_list_ops.to_absolute_coordinates(
             box_list.BoxList(boxes), image_shape[1], image_shape[2])
         for boxes in self.groundtruth_lists(fields.BoxListFields.boxes)]
-    groundtruth_classes_with_background_list = [
-        tf.to_float(
-            tf.pad(one_hot_encoding, [[0, 0], [1, 0]], mode='CONSTANT'))
-        for one_hot_encoding in self.groundtruth_lists(
-            fields.BoxListFields.classes)]
-    return groundtruth_boxlists, groundtruth_classes_with_background_list
+
+    if with_background:
+      groundtruth_classes_list = [
+          tf.to_float(
+              tf.pad(one_hot_encoding, [[0, 0], [1, 0]], mode='CONSTANT'))
+          for one_hot_encoding in self.groundtruth_lists(
+              fields.BoxListFields.classes)]
+    else:
+      groundtruth_classes_list = [
+          tf.to_float(one_hot_encoding)
+          for one_hot_encoding in self.groundtruth_lists(
+              fields.BoxListFields.classes)]
+
+    groundtruth_closeness_list = self.groundtruth_lists(fields.BoxListFields.closeness)
+    groundtruth_ignore_list = self.groundtruth_lists(fields.BoxListFields.ignore)
+    for gt_boxlist, gt_ignore, gt_closeness \
+        in zip(groundtruth_boxlists, groundtruth_ignore_list, groundtruth_closeness_list):
+
+      if gt_ignore is not None:
+        gt_boxlist.add_field(fields.BoxListFields.ignore, gt_ignore)
+      if gt_closeness is not None:
+        gt_boxlist.add_field(fields.BoxListFields.closeness, gt_closeness)
+
+    return groundtruth_boxlists, groundtruth_classes_list
 
   def _sample_box_classifier_minibatch(self,
                                        proposal_boxlist,
@@ -1058,6 +1302,52 @@ class FasterRCNNMetaArch(model.DetectionModel):
     return box_list_ops.boolean_mask(proposal_boxlist, sampled_indices)
 
   def _compute_second_stage_input_feature_maps(self, features_to_crop,
+                                               proposal_boxes_normalized):
+    """Crops to a set of proposals from the feature map for a batch of images.
+
+    Helper function for self._postprocess_rpn. This function calls
+    `tf.image.crop_and_resize` to create the feature map to be passed to the
+    second stage box classifier for each proposal.
+
+    Args:
+      features_to_crop: A float32 tensor with shape
+        [batch_size, height, width, depth]
+      proposal_boxes_normalized: A float32 tensor with shape [batch_size,
+        num_proposals, box_code_size] containing proposal boxes in
+        normalized coordinates.
+
+    Returns:
+      A float32 tensor with shape [K, new_height, new_width, depth].
+    """
+    def get_box_inds(proposals):
+      proposals_shape = proposals.get_shape().as_list()
+      if any(dim is None for dim in proposals_shape):
+        proposals_shape = tf.shape(proposals)
+      ones_mat = tf.ones(proposals_shape[:-1], dtype=tf.int32)
+      if len(proposals.get_shape().as_list()) > 2:
+        multiplier = tf.expand_dims(
+            tf.range(start=0, limit=proposals_shape[0]), 1)
+      else: # XXX not seperated by batch (regard all as batch 0)
+        multiplier = tf.constant(0, dtype=tf.int32)
+      return tf.reshape(ones_mat * multiplier, [-1])
+
+    if len(proposal_boxes_normalized.get_shape().as_list()) > 2:
+      flattened_proposal_boxes_normalized = \
+          self._flatten_first_two_dimensions(proposal_boxes_normalized)
+    else:
+      flattened_proposal_boxes_normalized = proposal_boxes_normalized
+
+    cropped_regions = tf.image.crop_and_resize(
+        features_to_crop,
+        flattened_proposal_boxes_normalized,
+        get_box_inds(proposal_boxes_normalized),
+        (self._initial_crop_size, self._initial_crop_size))
+    return slim.max_pool2d(
+        cropped_regions,
+        [self._maxpool_kernel_size, self._maxpool_kernel_size],
+        stride=self._maxpool_stride)
+
+  def _compute_second_stage_input_feature_maps_nopool(self, features_to_crop,
                                                proposal_boxes_normalized):
     """Crops to a set of proposals from the feature map for a batch of images.
 
@@ -1245,6 +1535,7 @@ class FasterRCNNMetaArch(model.DetectionModel):
         'second_stage_classification_loss') to scalar tensors representing
         corresponding loss values.
     """
+    mtl = self._mtl
     with tf.name_scope(scope, 'Loss', prediction_dict.values()):
       (groundtruth_boxlists, groundtruth_classes_with_background_list
       ) = self._format_groundtruth_data(prediction_dict['image_shape'])
@@ -1255,6 +1546,11 @@ class FasterRCNNMetaArch(model.DetectionModel):
           groundtruth_boxlists,
           groundtruth_classes_with_background_list)
       if not self._first_stage_only:
+        if mtl.closeness:
+          closeness_predictions = prediction_dict['closeness_predictions']
+        else:
+          closeness_predictions = None
+
         loss_dict.update(
             self._loss_box_classifier(
                 prediction_dict['refined_box_encodings'],
@@ -1262,7 +1558,34 @@ class FasterRCNNMetaArch(model.DetectionModel):
                 prediction_dict['proposal_boxes'],
                 prediction_dict['num_proposals'],
                 groundtruth_boxlists,
-                groundtruth_classes_with_background_list))
+                groundtruth_classes_with_background_list,
+                closeness_predictions=closeness_predictions,
+            ))
+
+      if mtl.window:
+        if not self._first_stage_only:
+            window_classes_with_background_list = \
+                self.window_lists(fields.BoxListFields.classes)
+            loss_dict.update(
+                self._loss_window_class(
+                    prediction_dict['window_class_predictions'],
+                    window_classes_with_background_list))
+      if mtl.edgemask:
+        edgemask_list = self.edgemask_lists(fields.BoxListFields.edgemask)
+        loss_dict.update(self._loss_edgemask(prediction_dict['edgemask_predictions'], edgemask_list))
+
+      if mtl.refine:
+        loss_dict.update(
+          self._loss_refined_classifier(
+            prediction_dict['refined_box_encodings'],
+            prediction_dict['mtl_refined_class_predictions_with_background'],
+            prediction_dict['proposal_boxes'],
+            prediction_dict['num_proposals'],
+            groundtruth_boxlists,
+            groundtruth_classes_with_background_list))
+
+      summary_dict = dict()
+
     return loss_dict
 
   def _loss_rpn(self,
@@ -1340,6 +1663,8 @@ class FasterRCNNMetaArch(model.DetectionModel):
           'first_stage_objectness_loss':
           self._first_stage_obj_loss_weight * objectness_loss,
       }
+      tf.add_to_collection('main_loss', tf.identity(loss_dict['first_stage_localization_loss'], name='first_stage_localization_loss'))
+      tf.add_to_collection('main_loss', tf.identity(loss_dict['first_stage_objectness_loss'], name='first_stage_objectness_loss'))
     return loss_dict
 
   def _loss_box_classifier(self,
@@ -1348,7 +1673,9 @@ class FasterRCNNMetaArch(model.DetectionModel):
                            proposal_boxes,
                            num_proposals,
                            groundtruth_boxlists,
-                           groundtruth_classes_with_background_list):
+                           groundtruth_classes_with_background_list,
+                           closeness_predictions=None,
+                           ):
     """Computes scalar box classifier loss tensors.
 
     Uses self._detector_target_assigner to obtain regression and classification
@@ -1383,6 +1710,7 @@ class FasterRCNNMetaArch(model.DetectionModel):
         'second_stage_classification_loss') to scalar tensors representing
         corresponding loss values.
     """
+    mtl = self._mtl
     with tf.name_scope('BoxClassifierLoss'):
       paddings_indicator = self._padded_batched_proposals_indicator(
           num_proposals, self.max_num_proposals)
@@ -1397,9 +1725,9 @@ class FasterRCNNMetaArch(model.DetectionModel):
                            [1, self.max_num_proposals]) * batch_size
 
       (batch_cls_targets_with_background, batch_cls_weights, batch_reg_targets,
-       batch_reg_weights, _) = target_assigner.batch_assign_targets(
+       batch_reg_weights, _, batch_closeness_targets) = target_assigner.batch_assign_targets(
            self._detector_target_assigner, proposal_boxlists,
-           groundtruth_boxlists, groundtruth_classes_with_background_list)
+           groundtruth_boxlists, groundtruth_classes_with_background_list, extension=True)
 
       # We only predict refined location encodings for the non background
       # classes, but we now pad it to make it compatible with the class
@@ -1437,8 +1765,119 @@ class FasterRCNNMetaArch(model.DetectionModel):
           'second_stage_localization_loss':
           (self._second_stage_loc_loss_weight * second_stage_loc_loss),
           'second_stage_classification_loss':
-          (self._second_stage_cls_loss_weight * second_stage_cls_loss),
+          (self._second_stage_cls_loss_weight * second_stage_cls_loss)
       }
+
+      tf.add_to_collection('main_loss', tf.identity(loss_dict['second_stage_localization_loss'], name='second_stage_localization_loss'))
+      tf.add_to_collection('main_loss', tf.identity(loss_dict['second_stage_classification_loss'], name='second_stage_classification_loss'))
+
+      normalizer_reg = tf.expand_dims(tf.maximum(1.0, tf.reduce_sum(batch_reg_weights, axis=1)), axis=1)
+
+      ############################ closeness ############################
+      if closeness_predictions is not None:
+        closeness_predictions = closeness_predictions[:, 1:]
+        batch_closeness_targets = batch_closeness_targets[:, :, 1:]
+
+        closeness_losses = self._closeness_loss(
+          closeness_predictions,
+          batch_closeness_targets,
+          weights=batch_reg_weights) / normalizer_reg
+
+        # if all of gt is 0, ignore that
+        norm_without_bg = tf.reduce_sum(batch_closeness_targets, axis=2)
+        closeness_losses = closeness_losses * norm_without_bg
+        closeness_loss = tf.reduce_sum(closeness_losses)
+
+        loss_dict['closeness_classification_loss'] = mtl.closeness_loss_weight * closeness_loss
+
+    return loss_dict
+
+  def _loss_refined_classifier(self,
+                              refined_box_encodings,
+                              class_predictions_with_background,
+                              proposal_boxes,
+                              num_proposals,
+                              groundtruth_boxlists,
+                              groundtruth_classes_with_background_list):
+
+    with tf.name_scope('RefineClassifierLoss'):
+      paddings_indicator = self._padded_batched_proposals_indicator(
+        num_proposals, self.max_num_proposals)
+      proposal_boxlists = [
+        box_list.BoxList(proposal_boxes_single_image)
+        for proposal_boxes_single_image in tf.unstack(proposal_boxes)]
+      batch_size = len(proposal_boxlists)
+
+      num_proposals_or_one = tf.to_float(tf.expand_dims(
+        tf.maximum(num_proposals, tf.ones_like(num_proposals)), 1))
+      normalizer = tf.tile(num_proposals_or_one,
+                           [1, self.max_num_proposals]) * batch_size
+
+      (batch_cls_targets_with_background, batch_cls_weights, batch_reg_targets,
+       batch_reg_weights, _) = target_assigner.batch_assign_targets(
+        self._detector_target_assigner, proposal_boxlists,
+        groundtruth_boxlists, groundtruth_classes_with_background_list)
+
+      refined_cls_losses = self._second_stage_classification_loss(
+        class_predictions_with_background,
+        batch_cls_targets_with_background,
+        weights=batch_cls_weights) / normalizer
+      refined_cls_loss = tf.reduce_sum(
+        tf.boolean_mask(refined_cls_losses, paddings_indicator))
+
+      if self._hard_example_miner:
+        (_, refined_cls_loss, _
+         ) = self._unpad_proposals_and_apply_hard_mining(
+          proposal_boxlists, refined_cls_losses,
+          refined_cls_losses, num_proposals)
+      loss_dict = {
+        'refined_classification_loss':
+          (self._mtl.refined_classification_loss_weight * refined_cls_loss)
+      }
+    return loss_dict
+
+  def _loss_window_class(self,
+                              window_class_predictions_with_background,
+                              window_class_list):
+    with tf.name_scope('WindowClass'):
+      window_class = tf.stack(window_class_list)
+
+      is_empty = tf.equal(tf.size(window_class), 0)
+
+      window_class_losses = tf.cond(is_empty,
+                                  lambda: tf.constant(0, tf.float32),
+                                  lambda: self._window_class_loss(window_class_predictions_with_background, window_class))
+
+      window_class_loss = tf.reduce_mean(window_class_losses)
+
+      loss_dict = {
+          'window_class_loss':
+          (self._mtl.window_class_loss_weight * window_class_loss)
+      }
+
+    return loss_dict
+
+  def _loss_edgemask(self, edgemask_predictions, groundtruth_edgemask_list):
+    with tf.name_scope('EdgeMask'):
+      edgemask_org = tf.stack(groundtruth_edgemask_list) # (B,2,H,W)
+      edgemask_org = tf.transpose(edgemask_org, [1,0,2,3]) # (2,B,H,W)
+      edgemask_weight = edgemask_org[1] # (B,H,W)
+      edgemask_fg = edgemask_org[0] # (B,H,W)
+      edgemask_bg = tf.ones_like(edgemask_fg, dtype=tf.float32) - edgemask_fg # (B,H,W)
+      edgemask = tf.stack([edgemask_bg, edgemask_fg], axis=0) # (2,B,H,W)
+      edgemask = tf.transpose(edgemask, perm=[1, 2, 3, 0]) # (B,H,W,2)
+
+      edgemask_predictions_resize = tf.image.resize_images(edgemask_predictions,
+                                                           [tf.shape(edgemask)[1], tf.shape(edgemask)[2]])
+
+      edgemask_loss_total = self._edgemask_loss(edgemask_predictions_resize, edgemask, weights=edgemask_weight)
+      edgemask_loss = tf.reduce_mean(edgemask_loss_total)
+
+      loss_dict = {
+          'edgemask_loss':
+          (self._mtl.edgemask_loss_weight * edgemask_loss)
+      }
+
     return loss_dict
 
   def _padded_batched_proposals_indicator(self,
@@ -1505,16 +1944,20 @@ class FasterRCNNMetaArch(model.DetectionModel):
           cls_losses=tf.expand_dims(single_image_cls_loss, 0),
           decoded_boxlist_list=[proposal_boxlist])
 
-  def restore_map(self, from_detection_checkpoint=True):
+  def restore_map(self,
+                  from_detection_checkpoint=True,
+                  restore_box_predictor=False,
+                  restore_window=False,
+                  restore_edgemask=False,
+                  restore_closeness=False,
+                  restore_mtl_refine=False):
     """Returns a map of variables to load from a foreign checkpoint.
-
     See parent class for details.
-
     Args:
       from_detection_checkpoint: whether to restore from a full detection
         checkpoint (with compatible variable names) or to restore from a
         classification checkpoint for initialization prior to training.
-
+      restore_box_predictor: Whether to restore the weights of box predictor.
     Returns:
       A dict mapping variable names (to load from a checkpoint) to variables in
       the model graph.
@@ -1524,12 +1967,47 @@ class FasterRCNNMetaArch(model.DetectionModel):
           self.first_stage_feature_extractor_scope,
           self.second_stage_feature_extractor_scope)
 
-    variables_to_restore = tf.global_variables()
-    variables_to_restore.append(slim.get_or_create_global_step())
-    # Only load feature extractor variables to be consistent with loading from
-    # a classification checkpoint.
-    feature_extractor_variables = tf.contrib.framework.filter_variables(
-        variables_to_restore,
-        include_patterns=[self.first_stage_feature_extractor_scope,
-                          self.second_stage_feature_extractor_scope])
-    return {var.op.name: var for var in feature_extractor_variables}
+    variables_to_restore = {}
+    for variable in tf.global_variables():
+      var_name = variable.op.name
+      skipped = True
+      for scope_name in [self.first_stage_feature_extractor_scope,
+                         self.second_stage_feature_extractor_scope]:
+        if var_name.startswith(scope_name):
+          log.infov('  Restore [%s]', var_name)
+          variables_to_restore[var_name] = variable
+          skipped = False
+      for scope_name in [self.first_stage_box_predictor_scope,
+                         self.second_stage_box_predictor_scope]:
+        if var_name.startswith(scope_name) and restore_box_predictor:
+          log.infov('  Restore [%s]', var_name)
+          variables_to_restore[var_name] = variable
+          skipped = False
+      if restore_window:
+        for scope_name in [self.window_box_predictor_scope]:
+          if var_name.startswith(scope_name):
+            log.infov('  Restore [%s]', var_name)
+            variables_to_restore[var_name] = variable
+            skipped = False
+      if restore_edgemask:
+        for scope_name in [self.edgemask_predictor_scope]:
+          if var_name.startswith(scope_name):
+            log.infov('  Restore [%s]', var_name)
+            variables_to_restore[var_name] = variable
+            skipped = False
+      if restore_closeness:
+        for scope_name in [self.closeness_box_predictor_scope]:
+          if var_name.startswith(scope_name):
+            log.infov('  Restore [%s]', var_name)
+            variables_to_restore[var_name] = variable
+            skipped = False
+      if restore_mtl_refine:
+        for scope_name in [self.mtl_refiner_scope]:
+          if var_name.startswith(scope_name):
+            log.infov('  Restore [%s]', var_name)
+            variables_to_restore[var_name] = variable
+            skipped = False
+      if skipped:
+        log.warn('  Skip    [%s]', var_name)
+        continue
+    return variables_to_restore

@@ -247,9 +247,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import itertools
 import os
 import sys
 import time
+import shutil
 
 from tensorflow.contrib.training.python.training import training
 from tensorflow.core.protobuf import config_pb2
@@ -263,14 +265,12 @@ from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import lookup_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variables
-#from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.summary import summary
 from tensorflow.python.training import optimizer as tf_optimizer
 from tensorflow.python.training import saver as tf_saver
 from tensorflow.python.training import supervisor
 from tensorflow.python.training import sync_replicas_optimizer
 from tensorflow.python.training import training_util
-
 from global_utils.custom_utils import log
 
 __all__ = [
@@ -455,7 +455,8 @@ def _wait_for_step(sess, global_step, step):
     time.sleep(1.0)
 
 
-def train_step(sess, train_op, global_step, train_step_kwargs, batch_size, steps_in_epoch):
+def train_step(sess, train_op, global_step, train_step_kwargs, batch_size,
+               steps_in_epoch, log_fn):
   """Function that takes a gradient step and specifies whether to stop.
 
   Args:
@@ -486,9 +487,11 @@ def train_step(sess, train_op, global_step, train_step_kwargs, batch_size, steps
           trace_level=config_pb2.RunOptions.FULL_TRACE)
       run_metadata = config_pb2.RunMetadata()
 
-  total_loss, np_global_step = sess.run([train_op, global_step],
-                                        options=trace_run_options,
-                                        run_metadata=run_metadata)
+  out = sess.run([train_op, global_step],
+                 options=trace_run_options,
+                 run_metadata=run_metadata)
+  total_loss, np_global_step = out[:2]
+
   time_elapsed = time.time() - start_time
 
   if run_metadata is not None:
@@ -505,16 +508,14 @@ def train_step(sess, train_op, global_step, train_step_kwargs, batch_size, steps
 
   if 'should_log' in train_step_kwargs:
     if sess.run(train_step_kwargs['should_log']):
-      log.info((" [train step {step:4d} / epoch {epoch:.2f}]  " +
-                "loss: {loss:.5f} " +
-                "({sec_per_batch:.3f} sec/batch, {images_per_sec:.3f} instances/sec)"
-                      ).format(epoch=float(np_global_step) / steps_in_epoch,
-                               step=np_global_step,
-                               loss=total_loss,
-                               sec_per_batch=time_elapsed,
-                               images_per_sec=batch_size/time_elapsed
-                               )
-               )
+      log_fn(("[train step {step:4d} / epoch {epoch:.2f}]  " +
+              "loss: {loss:.5f} " +
+              "({sec_per_batch:.3f} sec/batch, {images_per_sec:.3f} instances/sec)"
+              ).format(epoch=float(np_global_step) / steps_in_epoch,
+                       step=np_global_step,
+                       loss=total_loss,
+                       sec_per_batch=time_elapsed,
+                       images_per_sec=batch_size/time_elapsed))
 
   # TODO(nsilberman): figure out why we can't put this into sess.run. The
   # issue right now is that the stop check depends on the global step. The
@@ -534,7 +535,7 @@ def train_step(sess, train_op, global_step, train_step_kwargs, batch_size, steps
   else:
     should_stop = False
 
-  return total_loss, should_stop
+  return total_loss, should_stop, np_global_step
 
 
 _USE_DEFAULT = 0
@@ -566,7 +567,8 @@ def train(train_op,
           session_wrapper=None,
           trace_every_n_steps=None,
           batch_size=1,
-          num_examples=None):
+          num_examples=None,
+          config_summary_list=None):
   """Runs a training loop using a TensorFlow supervisor.
 
   When the sync_optimizer is supplied, gradient updates are applied
@@ -631,6 +633,7 @@ def train(train_op,
       information will be produced or saved.
     batch_size: batch size.
     num_examples: The number of examples in dataset for training.
+    dubug_tensors: Additional tensors to run for debugging.
 
   Returns:
     the value of the loss function after training.
@@ -643,6 +646,16 @@ def train(train_op,
   """
   if train_op is None:
     raise ValueError('train_op cannot be None.')
+  if not isinstance(train_op, list):
+    train_op = [train_op]
+
+  # Allocate log function to each step.
+  log_fn_list = [log.info, log.infov]
+  def _iter_log_fn():
+    for log_fn in log_fn_list:
+      yield log_fn
+  it = itertools.cycle(_iter_log_fn())
+  current_log_fn = it.next()
 
   if logdir is None:
     if summary_op != _USE_DEFAULT:
@@ -752,6 +765,7 @@ def train(train_op,
 
   steps_in_epoch = int(num_examples / batch_size)
 
+  total_loss = 0.0
   should_retry = True
   while should_retry:
     try:
@@ -775,23 +789,46 @@ def train(train_op,
         if is_chief and sync_optimizer is not None:
           sv.start_queue_runners(sess, chief_queue_runner)
           sess.run(init_tokens_op)
-        try:
-          while not sv.should_stop():
-            total_loss, should_stop = train_step_fn(
-                sess, train_op, global_step, train_step_kwargs,
-                batch_size, steps_in_epoch)
+        sess.graph.finalize()
+        # try:
+        if config_summary_list is not None:
+          for config_summary in config_summary_list:
+            sv.summary_writer.add_summary(config_summary.eval(session=sess))
+
+        while not sv.should_stop():
+          for _train_op in train_op:
+            total_loss, should_stop, np_global_step = train_step_fn(
+                sess, _train_op, global_step, train_step_kwargs,
+                batch_size, steps_in_epoch, current_log_fn)
             if should_stop:
               log.infov('Stopping Training.')
               sv.request_stop()
               break
-        except errors.OutOfRangeError:
-          # OutOfRangeError is thrown when epoch limit per
-          # tf.train.limit_epochs is reached.
-          log.warn('Caught OutOfRangeError. Stopping Training.')
+
+        # except errors.OutOfRangeError:
+        #   # OutOfRangeError is thrown when epoch limit per
+        #   # tf.train.limit_epochs is reached.
+        #   log.warn('Caught OutOfRangeError. Stopping Training.')
         if logdir and sv.is_chief:
           log.warn('Finished training! Saving model to disk.')
           sv.saver.save(sess, sv.save_path, global_step=sv.global_step)
           sv.stop(threads, close_summary_writer=True)
+
+          def _last_checkpoint_path(sv_save_path, additional_dir_name='last'):
+              dir_list = sv_save_path.split('/')
+              dir_list.insert(-1, 'last')
+              last_checkpoint_dir_path = '/'.join(dir_list[:-1])
+              last_checkpoint_path = '/'.join(dir_list)
+              return last_checkpoint_dir_path, last_checkpoint_path
+
+          # Save the last checkpoint again to a 'last' directory for the next training with
+          # different configuration.
+          last_checkpoint_dir_path, last_checkpoint_path = _last_checkpoint_path(sv.save_path, 'last')
+          if os.path.exists(last_checkpoint_dir_path):
+              shutil.rmtree(last_checkpoint_dir_path)
+          os.makedirs(last_checkpoint_dir_path)
+          sv.saver.save(sess, last_checkpoint_path, global_step=sv.global_step)
+
 
     except errors.AbortedError:
       # Always re-run on AbortedError as it indicates a restart of one of the

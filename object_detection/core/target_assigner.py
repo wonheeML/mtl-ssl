@@ -147,6 +147,12 @@ class TargetAssigner(object):
       cls_weights = tf.where(ignore_indicator, zeros_weight, cls_weights)
       return cls_weights
 
+    # extension is for 1st/2nd stage distinction
+    if params.has_key('extension'):
+      extension = params['extension']
+      params.pop('extension')
+    else:
+      extension = False
 
     if not isinstance(anchors, box_list.BoxList):
       raise ValueError('anchors must be an BoxList')
@@ -174,15 +180,21 @@ class TargetAssigner(object):
       match = self._matcher.match(match_quality_matrix, **params)
       reg_targets = self._create_regression_targets(anchors, gt_boxes, match)
       cls_targets = self._create_classification_targets(gt_labels, match)
+
+      if extension:
+        closeness_targets = self._create_mtl_targets(gt_boxes, match, fields.BoxListFields.closeness)
+
       reg_weights = self._create_regression_weights(match)
       cls_weights = self._create_classification_weights(
           match, self._positive_class_weight, self._negative_class_weight)
 
-      match_quality_matrix_crowd = self._similarity_calc_ioa.compare(crowd_boxes, anchors)
+      match_quality_matrix_crowd = self._similarity_calc_ioa.compare(crowd_boxes,
+                                                                     standard_boxes)
       match_crowd = self._matcher.match(match_quality_matrix_crowd, **params)
       cls_weights = apply_ignore(cls_weights, match, match_crowd)
 
-      match_quality_matrix_ignore = self._similarity_calc.compare(ignore_boxes, anchors)
+      match_quality_matrix_ignore = self._similarity_calc.compare(ignore_boxes,
+                                                                  standard_boxes)
       match_ignore = self._matcher.match(match_quality_matrix_ignore, **params)
       cls_weights = apply_ignore(cls_weights, match, match_ignore)
 
@@ -192,8 +204,13 @@ class TargetAssigner(object):
         cls_targets = self._reset_target_shape(cls_targets, num_anchors)
         reg_weights = self._reset_target_shape(reg_weights, num_anchors)
         cls_weights = self._reset_target_shape(cls_weights, num_anchors)
+        if extension:
+          closeness_targets = self._reset_target_shape(closeness_targets, num_anchors)
 
-    return cls_targets, cls_weights, reg_targets, reg_weights, match
+    if extension:
+      return cls_targets, cls_weights, reg_targets, reg_weights, match, closeness_targets
+    else:
+      return cls_targets, cls_weights, reg_targets, reg_weights, match
 
   def categorize_crowd_ignore(self, groundtruth_total_labels, groundtruth_total_boxes):
     """ ignore negative example in case of High iou(ioa) with ignore(crowd)
@@ -254,7 +271,6 @@ class TargetAssigner(object):
     matched_anchors = box_list_ops.gather(anchors, matched_anchor_indices)
     matched_gt_boxes = box_list_ops.gather(groundtruth_boxes, matched_gt_indices)
     matched_reg_targets = self._box_coder.encode(matched_gt_boxes, matched_anchors)
-
     unmatched_ignored_reg_targets = tf.tile(
         self._default_regression_target(),
         tf.stack([tf.size(unmatched_ignored_anchor_indices), 1]))
@@ -263,6 +279,32 @@ class TargetAssigner(object):
         [matched_reg_targets, unmatched_ignored_reg_targets])
     # TODO: summarize the number of matches on average.
     return reg_targets
+
+  def _create_mtl_targets(self, groundtruth_boxes, match, field_name):
+    """Returns a regression target for each anchor.
+
+    Args:
+      groundtruth_boxes: a BoxList representing M groundtruth_boxes
+      match: a matcher.Match object
+
+    Returns:
+      reg_targets: a float32 tensor with shape [N, box_code_dimension]
+    """
+    matched_anchor_indices = match.matched_column_indices()
+    unmatched_ignored_anchor_indices = (match.unmatched_or_ignored_column_indices())
+    matched_gt_indices = match.matched_row_indices()
+
+    matched_gt_boxes = box_list_ops.gather(groundtruth_boxes, matched_gt_indices)
+    matched_targets = matched_gt_boxes.get_field(field_name)
+
+    unmatched_ignored_reg_targets = tf.tile(
+      tf.zeros([1, matched_targets.get_shape().as_list()[-1]], dtype=tf.float32),
+      tf.stack([tf.size(unmatched_ignored_anchor_indices), 1]))
+    targets = tf.dynamic_stitch(
+        [matched_anchor_indices, unmatched_ignored_anchor_indices],
+        [matched_targets, unmatched_ignored_reg_targets])
+    # TODO: summarize the number of matches on average.
+    return targets
 
   def _default_regression_target(self):
     """Returns the default target for anchors to regress to.
@@ -431,7 +473,8 @@ def batch_assign_targets(target_assigner,
                          anchors_batch,
                          gt_box_batch,
                          gt_class_targets_batch,
-                         dt_box_batch=None):
+                         dt_box_batch=None,
+                         extension=False):
   """Batched assignment of classification and regression targets.
 
   Args:
@@ -486,20 +529,42 @@ def batch_assign_targets(target_assigner,
   reg_targets_list = []
   reg_weights_list = []
   match_list = []
+  closeness_targets_list = []
+
   for anchors, gt_boxes, gt_class_targets, dt_boxes in zip(
       anchors_batch, gt_box_batch, gt_class_targets_batch, dt_box_batch):
-    cls_targets, cls_weights, reg_targets, reg_weights, match = target_assigner.assign(
-        anchors, gt_boxes, gt_class_targets, dt_boxes)
+    results = target_assigner.assign(
+        anchors, gt_boxes, gt_class_targets, dt_boxes, extension=extension)
+
+    if extension:
+      (cls_targets, cls_weights, reg_targets, reg_weights, match, closeness_targets) = results
+    else:
+      (cls_targets, cls_weights, reg_targets, reg_weights, match) = results
 
     cls_targets_list.append(cls_targets)
     cls_weights_list.append(cls_weights)
     reg_targets_list.append(reg_targets)
     reg_weights_list.append(reg_weights)
     match_list.append(match)
+
+    if extension:
+      closeness_targets_list.append(closeness_targets)
+
   batch_cls_targets = tf.stack(cls_targets_list)
   batch_cls_weights = tf.stack(cls_weights_list)
   batch_reg_targets = tf.stack(reg_targets_list)
   batch_reg_weights = tf.stack(reg_weights_list)
 
-  return (batch_cls_targets, batch_cls_weights, batch_reg_targets,
-          batch_reg_weights, match_list)
+  if extension:
+    batch_closeness_targets = tf.stack(closeness_targets_list)
+
+  result_list = []
+  result_list.append(batch_cls_targets)
+  result_list.append(batch_cls_weights)
+  result_list.append(batch_reg_targets)
+  result_list.append(batch_reg_weights)
+  result_list.append(match_list)
+  if extension:
+    result_list.append(batch_closeness_targets)
+
+  return result_list

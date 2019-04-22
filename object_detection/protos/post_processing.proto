@@ -16,7 +16,7 @@ message BatchNonMaxSuppression {
   optional int32 max_detections_per_class = 3 [default = 100];
 
   // Maximum number of detections to retain across all classes.
-  optional int32 max_total_detections = 5 [default = 100];
+  optional int32 max_total_detections = 4 [default = 100];
 }
 
 // Configuration proto for post-processing predicted boxes and
@@ -37,6 +37,6 @@ message PostProcessing {
     SOFTMAX = 2;
   }
 
-  // Score converter to use.
+  // Score converter for classification scores.
   optional ScoreConverter score_converter = 2 [default = IDENTITY];
 }

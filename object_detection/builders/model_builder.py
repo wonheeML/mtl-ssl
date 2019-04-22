@@ -13,10 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 
+import tensorflow as tf
+
 """A function to build a DetectionModel from configuration."""
 from object_detection.builders import anchor_generator_builder
 from object_detection.builders import box_coder_builder
 from object_detection.builders import box_predictor_builder
+from object_detection.builders import mask_predictor_builder
 from object_detection.builders import hyperparams_builder
 from object_detection.builders import image_resizer_builder
 from object_detection.builders import losses_builder
@@ -30,6 +33,8 @@ from object_detection.meta_architectures import rfcn_meta_arch
 from object_detection.meta_architectures import ssd_meta_arch
 from object_detection.models import faster_rcnn_inception_resnet_v2_feature_extractor as frcnn_inc_res
 from object_detection.models import faster_rcnn_resnet_v1_feature_extractor as frcnn_resnet_v1
+from object_detection.models import faster_rcnn_vgg_16_feature_extractor as frcnn_vgg_16
+from object_detection.models import faster_rcnn_mobilenet_v1_feature_extractor as frcnn_mobilenet_v1
 from object_detection.models.ssd_inception_v2_feature_extractor import SSDInceptionV2FeatureExtractor
 from object_detection.models.ssd_mobilenet_v1_feature_extractor import SSDMobileNetV1FeatureExtractor
 from object_detection.models.ssd_vgg_16_feature_extractor import SSDVgg16FeatureExtractor
@@ -51,6 +56,12 @@ FASTER_RCNN_FEATURE_EXTRACTOR_CLASS_MAP = {
     'faster_rcnn_resnet152':
     frcnn_resnet_v1.FasterRCNNResnet152FeatureExtractor,
     'faster_rcnn_inception_resnet_v2':
+    frcnn_inc_res.FasterRCNNInceptionResnetV2FeatureExtractor,
+    'faster_rcnn_vgg_16':
+    frcnn_vgg_16.FasterRCNNVgg16FeatureExtractor,
+    'frcnn_mobilenet_v1':
+    frcnn_mobilenet_v1.FasterRCNNMobilenetV1FeatureExtractor,
+    'faster_rcnn_inception_v2':
     frcnn_inc_res.FasterRCNNInceptionResnetV2FeatureExtractor
 }
 
@@ -79,7 +90,7 @@ def build(model_config, is_training):
   if meta_architecture == 'ssd':
     return _build_ssd_model(model_config.ssd, is_training)
   if meta_architecture == 'faster_rcnn':
-    return _build_faster_rcnn_model(model_config.faster_rcnn, is_training)
+    return _build_faster_rcnn_model(model_config.faster_rcnn, is_training, mtl=model_config.mtl)
 
   raise ValueError('Unknown meta architecture: {}'.format(meta_architecture))
 
@@ -131,17 +142,18 @@ def _build_ssd_model(ssd_config, is_training):
 
   # Feature extractor
   feature_extractor = _build_ssd_feature_extractor(ssd_config.feature_extractor,
-                                                   is_training)
+      is_training and ssd_config.feature_extractor.trainable)
 
   box_coder = box_coder_builder.build(ssd_config.box_coder)
   matcher = matcher_builder.build(ssd_config.matcher)
   region_similarity_calculator = sim_calc.build(
       ssd_config.similarity_calculator)
   ssd_box_predictor = box_predictor_builder.build(hyperparams_builder.build,
-                                                  ssd_config.box_predictor,
-                                                  is_training, num_classes)
-  anchor_generator = anchor_generator_builder.build(
-      ssd_config.anchor_generator)
+      ssd_config.box_predictor,
+      is_training and ssd_config.box_predictor.trainable,
+      num_classes)
+
+  anchor_generator = anchor_generator_builder.build(ssd_config.anchor_generator)
   image_resizer_fn = image_resizer_builder.build(ssd_config.image_resizer)
   non_max_suppression_fn, score_conversion_fn = post_processing_builder.build(
       ssd_config.post_processing)
@@ -170,7 +182,7 @@ def _build_ssd_model(ssd_config, is_training):
 
 
 def _build_faster_rcnn_feature_extractor(
-    feature_extractor_config, is_training, reuse_weights=None):
+    feature_extractor_config, is_training, reuse_weights, **kwargs):
   """Builds a faster_rcnn_meta_arch.FasterRCNNFeatureExtractor based on config.
 
   Args:
@@ -195,10 +207,10 @@ def _build_faster_rcnn_feature_extractor(
   feature_extractor_class = FASTER_RCNN_FEATURE_EXTRACTOR_CLASS_MAP[
       feature_type]
   return feature_extractor_class(
-      is_training, first_stage_features_stride, reuse_weights)
+      is_training, first_stage_features_stride, reuse_weights, **kwargs)
 
 
-def _build_faster_rcnn_model(frcnn_config, is_training):
+def _build_faster_rcnn_model(frcnn_config, is_training, mtl=None):
   """Builds a Faster R-CNN or R-FCN detection model based on the model config.
 
   Builds R-FCN model if the second_stage_box_predictor in the config is of type
@@ -218,14 +230,26 @@ def _build_faster_rcnn_model(frcnn_config, is_training):
   num_classes = frcnn_config.num_classes
   image_resizer_fn = image_resizer_builder.build(frcnn_config.image_resizer)
 
+  feature_extractor_kwargs = {}
+  feature_extractor_kwargs['freeze_layer'] = frcnn_config.feature_extractor.freeze_layer
+  feature_extractor_kwargs['batch_norm_trainable'] = frcnn_config.feature_extractor.batch_norm_trainable
+
+  if frcnn_config.feature_extractor.HasField('weight_decay'):
+    feature_extractor_kwargs['weight_decay'] = \
+        frcnn_config.feature_extractor.weight_decay
   feature_extractor = _build_faster_rcnn_feature_extractor(
-      frcnn_config.feature_extractor, is_training)
+      frcnn_config.feature_extractor,
+      is_training and frcnn_config.feature_extractor.trainable,
+      reuse_weights=tf.AUTO_REUSE, **feature_extractor_kwargs)
 
   first_stage_only = frcnn_config.first_stage_only
   first_stage_anchor_generator = anchor_generator_builder.build(
       frcnn_config.first_stage_anchor_generator)
 
+  first_stage_clip_window = frcnn_config.first_stage_clip_window
   first_stage_atrous_rate = frcnn_config.first_stage_atrous_rate
+  first_stage_box_predictor_trainable = \
+      frcnn_config.first_stage_box_predictor_trainable
   first_stage_box_predictor_arg_scope = hyperparams_builder.build(
       frcnn_config.first_stage_box_predictor_conv_hyperparams, is_training)
   first_stage_box_predictor_kernel_size = (
@@ -248,8 +272,9 @@ def _build_faster_rcnn_model(frcnn_config, is_training):
   second_stage_box_predictor = box_predictor_builder.build(
       hyperparams_builder.build,
       frcnn_config.second_stage_box_predictor,
-      is_training=is_training,
-      num_classes=num_classes)
+      is_training=is_training and frcnn_config.second_stage_box_predictor.trainable,
+      num_classes=num_classes,
+      reuse_weights=tf.AUTO_REUSE)
   second_stage_batch_size = frcnn_config.second_stage_batch_size
   second_stage_balance_fraction = frcnn_config.second_stage_balance_fraction
   (second_stage_non_max_suppression_fn, second_stage_score_conversion_fn
@@ -258,6 +283,41 @@ def _build_faster_rcnn_model(frcnn_config, is_training):
       frcnn_config.second_stage_localization_loss_weight)
   second_stage_classification_loss_weight = (
       frcnn_config.second_stage_classification_loss_weight)
+
+  if mtl.window:
+    window_box_predictor = box_predictor_builder.build(
+        hyperparams_builder.build,
+        mtl.window_box_predictor,
+        is_training=is_training and mtl.window_box_predictor.trainable,
+        num_classes=num_classes+1,
+        reuse_weights=tf.AUTO_REUSE)
+  else:
+    window_box_predictor = second_stage_box_predictor
+
+  if mtl.closeness:
+    closeness_box_predictor = box_predictor_builder.build(
+        hyperparams_builder.build,
+        mtl.closeness_box_predictor,
+        is_training=is_training and mtl.closeness_box_predictor.trainable,
+        num_classes=num_classes+1,
+        reuse_weights=tf.AUTO_REUSE)
+  else:
+    closeness_box_predictor = second_stage_box_predictor
+
+  if mtl.edgemask:
+    edgemask_predictor = mask_predictor_builder.build(
+        hyperparams_builder.build,
+        mtl.edgemask_predictor,
+        is_training=is_training and mtl.edgemask_predictor.trainable,
+        num_classes=2,
+        reuse_weights=tf.AUTO_REUSE,
+        channels=1)
+  else:
+    edgemask_predictor = None
+
+  mtl_refiner_arg_scope = None
+  if mtl.refine:
+    mtl_refiner_arg_scope = hyperparams_builder.build(mtl.refiner_fc_hyperparams, is_training)
 
   hard_example_miner = None
   if frcnn_config.HasField('hard_example_miner'):
@@ -273,7 +333,10 @@ def _build_faster_rcnn_model(frcnn_config, is_training):
       'feature_extractor': feature_extractor,
       'first_stage_only': first_stage_only,
       'first_stage_anchor_generator': first_stage_anchor_generator,
+      'first_stage_clip_window': first_stage_clip_window,
       'first_stage_atrous_rate': first_stage_atrous_rate,
+      'first_stage_box_predictor_trainable':
+      first_stage_box_predictor_trainable,
       'first_stage_box_predictor_arg_scope':
       first_stage_box_predictor_arg_scope,
       'first_stage_box_predictor_kernel_size':
@@ -296,7 +359,13 @@ def _build_faster_rcnn_model(frcnn_config, is_training):
       second_stage_localization_loss_weight,
       'second_stage_classification_loss_weight':
       second_stage_classification_loss_weight,
-      'hard_example_miner': hard_example_miner}
+      'hard_example_miner': hard_example_miner,
+      'mtl': mtl,
+      'mtl_refiner_arg_scope': mtl_refiner_arg_scope,
+      'window_box_predictor': window_box_predictor,
+      'closeness_box_predictor': closeness_box_predictor,
+      'edgemask_predictor': edgemask_predictor
+  }
 
   if isinstance(second_stage_box_predictor, box_predictor.RfcnBoxPredictor):
     return rfcn_meta_arch.RFCNMetaArch(

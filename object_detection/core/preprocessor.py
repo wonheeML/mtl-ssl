@@ -45,6 +45,7 @@ back to rank 4.
 
 import sys
 import tensorflow as tf
+import numpy as np
 
 from tensorflow.python.ops import control_flow_ops
 
@@ -241,7 +242,10 @@ def random_horizontal_flip(
     masks=None,
     keypoints=None,
     keypoint_flip_permutation=None,
-    seed=None):
+    seed=None,
+    window_boxes=None,
+    groundtruth_edgemask_masks=None
+):
   """Randomly decides whether to mirror the image and detections or not.
 
   The probability of flipping the image is 50%.
@@ -289,7 +293,13 @@ def random_horizontal_flip(
     raise ValueError(
         'keypoints are provided but keypoints_flip_permutation is not provided')
 
-  with tf.name_scope('RandomHorizontalFlip', values=[image, boxes]):
+  values = [image, boxes]
+  if window_boxes is not None:
+    values.append(window_boxes)
+  if groundtruth_edgemask_masks is not None:
+    values.append(groundtruth_edgemask_masks)
+
+  with tf.name_scope('RandomHorizontalFlip', values=values):
     result = []
     # random variable defining whether to do flip or not
     do_a_flip_random = tf.random_uniform([], seed=seed)
@@ -321,6 +331,15 @@ def random_horizontal_flip(
           lambda: keypoint_ops.flip_horizontal(keypoints, 0.5, permutation),
           lambda: keypoints)
       result.append(keypoints)
+
+    if window_boxes is not None:
+      window_boxes = tf.cond(
+        do_a_flip_random, lambda: flip_boxes(window_boxes), lambda: window_boxes)
+      result.append(window_boxes)
+
+    if groundtruth_edgemask_masks is not None:
+      groundtruth_edgemask_masks = tf.cond(do_a_flip_random, lambda: _flip_image(groundtruth_edgemask_masks), lambda: groundtruth_edgemask_masks)
+      result.append(groundtruth_edgemask_masks)
 
     return tuple(result)
 
@@ -359,7 +378,9 @@ def random_image_scale(image,
                        masks=None,
                        min_scale_ratio=0.5,
                        max_scale_ratio=2.0,
-                       seed=None):
+                       seed=None,
+                       image_only=False,
+                       min_size=0):
   """Scales the image size.
 
   Args:
@@ -370,6 +391,7 @@ def random_image_scale(image,
     min_scale_ratio: minimum scaling ratio.
     max_scale_ratio: maximum scaling ratio.
     seed: random seed.
+    image_only: whether to return image only or not.
 
   Returns:
     image: image which is the same rank as input image.
@@ -381,6 +403,11 @@ def random_image_scale(image,
     image_shape = tf.shape(image)
     image_height = image_shape[0]
     image_width = image_shape[1]
+    min_scale_ratio = tf.maximum(
+        min_scale_ratio,
+        tf.cast(tf.maximum(tf.divide(min_size, image_height),
+                           tf.divide(min_size, image_width)),
+                tf.float32))
     size_coef = tf.random_uniform([],
                                   minval=min_scale_ratio,
                                   maxval=max_scale_ratio,
@@ -391,6 +418,7 @@ def random_image_scale(image,
         tf.multiply(tf.to_float(image_width), size_coef))
     image = tf.image.resize_images(
         image, [image_newysize, image_newxsize], align_corners=True)
+    if image_only: return image
     result.append(image)
     if masks:
       masks = tf.image.resize_nearest_neighbor(
@@ -1874,7 +1902,7 @@ def get_default_func_arg_map(include_instance_masks=False,
   return prep_func_arg_map
 
 
-def preprocess(tensor_dict, preprocess_options, func_arg_map=None):
+def preprocess(tensor_dict, preprocess_options, func_arg_map=None, mtl_window=False, mtl_edgemask=False):
   """Preprocess images and bounding boxes.
 
   Various types of preprocessing (to be implemented) based on the

@@ -5,6 +5,10 @@ package object_detection.protos;
 import "object_detection/protos/faster_rcnn.proto";
 import "object_detection/protos/ssd.proto";
 
+import "object_detection/protos/hyperparams.proto";
+import "object_detection/protos/box_predictor.proto";
+import "object_detection/protos/mask_predictor.proto";
+
 // Top level configuration for DetectionModels.
 message DetectionModel {
   oneof model {
@@ -14,5 +18,41 @@ message DetectionModel {
 
   // Path to file which has initial values of Variables.
   // It is similar to train.fine_tune_checkpoint, but not ckpt file.
-  optional string init_file = 4 [default=""];
+  optional string init_file = 3 [default=""];
+
+  // Whether to use multi-task learning
+  optional MTL mtl = 4;
+}
+
+message MTL {
+  // Use
+  optional bool refine        = 1 [default=false];
+  optional bool window        = 2 [default=false];
+  optional bool closeness     = 4 [default=false];
+  optional bool edgemask      = 5 [default=false];
+
+  // Refine
+  optional int32 refine_num_fc_layers           = 6 [default=0];
+  optional Hyperparams refiner_fc_hyperparams   = 7;
+  optional bool refine_residue                  = 8 [default=false];
+  optional float refine_dropout_rate            = 9 [default=1.0];
+
+  // loss weight
+  optional float window_class_loss_weight           = 10 [default=0.0];
+  optional float closeness_loss_weight              = 11 [default=0.0];
+  optional float edgemask_loss_weight               = 12 [default=0.0];
+  optional float refined_classification_loss_weight = 13 [default=0.0];
+
+  // Predictor
+  optional BoxPredictor window_box_predictor        = 14;
+  optional BoxPredictor closeness_box_predictor     = 15;
+  optional MaskPredictor edgemask_predictor         = 16;
+
+  // ETC
+  optional string shared_feature                    = 17 [default="proposal_feature_maps"];
+  optional bool stop_gradient_for_aux_tasks         = 18 [default=false];
+  optional bool share_second_stage_init             = 19 [default=true];
+  optional bool stop_gradient_for_prediction_org    = 20 [default=false];
+  optional bool global_closeness                    = 21 [default=true];
+  optional bool edgemask_weighted                   = 22 [default=true];
 }

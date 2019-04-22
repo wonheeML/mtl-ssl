@@ -330,7 +330,8 @@ inception_resnet_v2.default_image_size = 299
 
 def inception_resnet_v2_arg_scope(weight_decay=0.00004,
                                   batch_norm_decay=0.9997,
-                                  batch_norm_epsilon=0.001):
+                                  batch_norm_epsilon=0.001,
+                                  trainable=True):
   """Returns the scope with the default parameters for inception_resnet_v2.
 
   Args:
@@ -344,11 +345,13 @@ def inception_resnet_v2_arg_scope(weight_decay=0.00004,
   # Set weight_decay for weights in conv2d and fully_connected layers.
   with slim.arg_scope([slim.conv2d, slim.fully_connected],
                       weights_regularizer=slim.l2_regularizer(weight_decay),
-                      biases_regularizer=slim.l2_regularizer(weight_decay)):
+                      biases_regularizer=slim.l2_regularizer(weight_decay),
+                      trainable=trainable):
 
     batch_norm_params = {
         'decay': batch_norm_decay,
         'epsilon': batch_norm_epsilon,
+        'trainable': trainable
     }
     # Set activation_fn and parameters for batch_norm.
     with slim.arg_scope([slim.conv2d], activation_fn=tf.nn.relu,

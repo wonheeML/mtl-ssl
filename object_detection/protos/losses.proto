@@ -35,6 +35,10 @@ message LocalizationLoss {
 message WeightedL2LocalizationLoss {
   // Output loss per anchor.
   optional bool anchorwise_output = 1 [default=false];
+
+  // Weights for over and under predicted values
+  optional float over_weight = 2 [default=1.0];
+  optional float under_weight = 3 [default=1.0];
 }
 
 // SmoothL1 (Huber) location loss: .5 * x ^ 2 if |x| < 1 else |x| - .5
@@ -53,6 +57,8 @@ message ClassificationLoss {
     WeightedSigmoidClassificationLoss weighted_sigmoid = 1;
     WeightedSoftmaxClassificationLoss weighted_softmax = 2;
     BootstrappedSigmoidClassificationLoss bootstrapped_sigmoid = 3;
+    WeightedL2LocalizationLoss weighted_l2 = 4;
+    WeightedSmoothL1LocalizationLoss weighted_smooth_l1 = 5;
   }
 }
 
@@ -114,3 +120,4 @@ message HardExampleMiner {
   // detection per image.
   optional int32 min_negatives_per_image = 5 [default=0];
 }
+

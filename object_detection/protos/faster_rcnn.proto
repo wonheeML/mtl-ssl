@@ -23,19 +23,22 @@ message FasterRcnn {
   optional bool first_stage_only = 1 [default=false];
 
   // Number of classes to predict.
-  optional int32 num_classes = 3;
+  optional int32 num_classes = 2;
 
   // Image resizer for preprocessing the input image.
-  optional ImageResizer image_resizer = 4;
+  optional ImageResizer image_resizer = 3;
 
   // Feature extractor config.
-  optional FasterRcnnFeatureExtractor feature_extractor = 5;
+  optional FasterRcnnFeatureExtractor feature_extractor = 4;
 
 
   // (First stage) region proposal network (RPN) parameters.
 
   // Anchor generator to compute RPN anchors.
-  optional AnchorGenerator first_stage_anchor_generator = 6;
+  optional AnchorGenerator first_stage_anchor_generator = 5;
+
+  // whether to clip or remove anchors that venture outside the image window
+  optional bool first_stage_clip_window = 6 [default=false];
 
   // Atrous rate for the convolution op applied to the
   // `first_stage_features_to_crop` tensor to obtain box predictions.
@@ -89,9 +92,6 @@ message FasterRcnn {
   // Stride of the max pool op on the cropped feature map during ROI pooling.
   optional int32 maxpool_stride = 20;
 
-
-  // (Second stage) box classifier parameters
-
   // Hyperparameters for the second stage box predictor. If box predictor type
   // is set to rfcn_box_predictor, a R-FCN model is constructed, otherwise a
   // Faster R-CNN model is constructed.
@@ -118,8 +118,11 @@ message FasterRcnn {
 
   // If not left to default, applies hard example mining.
   optional HardExampleMiner hard_example_miner = 27;
-}
 
+
+  // Whether to freeze the first stage box predictor or not.
+  optional bool first_stage_box_predictor_trainable = 28 [default=true];
+}
 
 message FasterRcnnFeatureExtractor {
   // Type of Faster R-CNN model (e.g., 'faster_rcnn_resnet101';
@@ -128,4 +131,16 @@ message FasterRcnnFeatureExtractor {
 
   // Output stride of extracted RPN feature map.
   optional int32 first_stage_features_stride = 2 [default=16];
+
+  // Whether to train or not (freeze).
+  optional bool trainable = 3 [default=true];
+
+  // Name of last freezed layer.
+  optional string freeze_layer = 4 [default='block1'];
+
+  // weight decay for regularizer.
+  optional float weight_decay = 5;
+
+  // batch norm trainable
+  optional bool batch_norm_trainable = 6 [default=false];
 }

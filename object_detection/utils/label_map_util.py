@@ -138,3 +138,18 @@ def get_label_map_dict(label_map_path):
   for item in label_map.item:
     label_map_dict[item.name] = item.id
   return label_map_dict
+
+
+def get_class_indices(label_map_dict):
+  class_indices = [label_map_dict[k] for k in label_map_dict.keys()]
+  class_indices.sort()
+  return class_indices
+
+
+def get_index_map_dict(label_map_dict):
+  index_map_dict = dict()
+  for k in label_map_dict.keys():
+    v = label_map_dict[k]
+    index_map_dict[v] = k
+  index_map_dict[0] = 'bg'
+  return index_map_dict

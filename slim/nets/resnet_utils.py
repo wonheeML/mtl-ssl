@@ -124,7 +124,7 @@ def conv2d_same(inputs, num_outputs, kernel_size, stride, rate=1, scope=None):
 
 @slim.add_arg_scope
 def stack_blocks_dense(net, blocks, output_stride=None,
-                       outputs_collections=None):
+                       outputs_collections=None, block_trainable=[]):
   """Stacks ResNet `Blocks` and controls output feature density.
 
   First, this function creates scopes for the ResNet in the form of
@@ -171,24 +171,28 @@ def stack_blocks_dense(net, blocks, output_stride=None,
   # The atrous convolution rate parameter.
   rate = 1
 
-  for block in blocks:
-    with tf.variable_scope(block.scope, 'block', [net]) as sc:
-      for i, unit in enumerate(block.args):
-        if output_stride is not None and current_stride > output_stride:
-          raise ValueError('The target output_stride cannot be reached.')
+  if not block_trainable:
+    block_trainable = [True] * len(blocks)
 
-        with tf.variable_scope('unit_%d' % (i + 1), values=[net]):
-          # If we have reached the target output_stride, then we need to employ
-          # atrous convolution with stride=1 and multiply the atrous rate by the
-          # current unit's stride for use in subsequent layers.
-          if output_stride is not None and current_stride == output_stride:
-            net = block.unit_fn(net, rate=rate, **dict(unit, stride=1))
-            rate *= unit.get('stride', 1)
+  for block, trainable in zip(blocks, block_trainable):
+    with slim.arg_scope([slim.conv2d], trainable=trainable):
+      with tf.variable_scope(block.scope, 'block', [net]) as sc:
+        for i, unit in enumerate(block.args):
+          if output_stride is not None and current_stride > output_stride:
+            raise ValueError('The target output_stride cannot be reached.')
 
-          else:
-            net = block.unit_fn(net, rate=1, **unit)
-            current_stride *= unit.get('stride', 1)
-      net = slim.utils.collect_named_outputs(outputs_collections, sc.name, net)
+          with tf.variable_scope('unit_%d' % (i + 1), values=[net]):
+            # If we have reached the target output_stride, then we need to employ
+            # atrous convolution with stride=1 and multiply the atrous rate by the
+            # current unit's stride for use in subsequent layers.
+            if output_stride is not None and current_stride == output_stride:
+              net = block.unit_fn(net, rate=rate, **dict(unit, stride=1))
+              rate *= unit.get('stride', 1)
+
+            else:
+              net = block.unit_fn(net, rate=1, **unit)
+              current_stride *= unit.get('stride', 1)
+        net = slim.utils.collect_named_outputs(outputs_collections, sc.name, net)
 
   if output_stride is not None and current_stride != output_stride:
     raise ValueError('The target output_stride cannot be reached.')
@@ -201,7 +205,9 @@ def resnet_arg_scope(weight_decay=0.0001,
                      batch_norm_epsilon=1e-5,
                      batch_norm_scale=True,
                      activation_fn=tf.nn.relu,
-                     use_batch_norm=True):
+                     use_batch_norm=True,
+                     trainable=True,
+                     batch_norm_trainable=False):
   """Defines the default ResNet arg scope.
 
   TODO(gpapan): The batch-normalization related default values above are
@@ -228,6 +234,7 @@ def resnet_arg_scope(weight_decay=0.0001,
       'epsilon': batch_norm_epsilon,
       'scale': batch_norm_scale,
       'updates_collections': tf.GraphKeys.UPDATE_OPS,
+      'trainable': batch_norm_trainable
   }
 
   with slim.arg_scope(
@@ -236,7 +243,8 @@ def resnet_arg_scope(weight_decay=0.0001,
       weights_initializer=slim.variance_scaling_initializer(),
       activation_fn=activation_fn,
       normalizer_fn=slim.batch_norm if use_batch_norm else None,
-      normalizer_params=batch_norm_params):
+      normalizer_params=batch_norm_params,
+      trainable=trainable):
     with slim.arg_scope([slim.batch_norm], **batch_norm_params):
       # The following implies padding='SAME' for pool1, which makes feature
       # alignment easier for dense prediction tasks. This is also used in

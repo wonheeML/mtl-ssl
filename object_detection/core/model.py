@@ -64,6 +64,9 @@ class DetectionModel(object):
     """
     self._num_classes = num_classes
     self._groundtruth_lists = {}
+    self._window_lists = {}
+    self._edgemask_lists = {}
+    self._image_infos = {}
 
   @property
   def num_classes(self):
@@ -86,6 +89,34 @@ class DetectionModel(object):
     if field not in self._groundtruth_lists:
       raise RuntimeError('Groundtruth tensor %s has not been provided', field)
     return self._groundtruth_lists[field]
+
+  def window_lists(self, field):
+    """Access list of window tensors.
+
+    Args:
+      field: a string key, options are
+        fields.BoxListFields.{boxes,classes}
+
+    Returns:
+      a list of tensors holding window information (see also
+      provide_window function below), with one entry for each image in the
+      batch.
+    Raises:
+      RuntimeError: if the field has not been provided via provide_window.
+    """
+    if field not in self._window_lists:
+      raise RuntimeError('Groundtruth tensor %s has not been provided', field)
+    return self._window_lists[field]
+
+  def edgemask_lists(self, field):
+    if field not in self._edgemask_lists:
+      raise RuntimeError('Groundtruth tensor %s has not been provided', field)
+    return self._edgemask_lists[field]
+
+  def image_infos(self, field):
+    if field not in self._image_infos:
+      raise RuntimeError('Image info tensor %s has not been provided', field)
+    return self._image_infos[field]
 
   @abstractmethod
   def preprocess(self, inputs):
@@ -194,8 +225,8 @@ class DetectionModel(object):
   def provide_groundtruth(self,
                           groundtruth_boxes_list,
                           groundtruth_classes_list,
+                          groundtruth_closeness_list,
                           groundtruth_ignore=None,
-                          groundtruth_crowd_list=None,
                           groundtruth_masks_list=None,
                           groundtruth_keypoints_list=None):
     """Provide groundtruth tensors.
@@ -224,17 +255,39 @@ class DetectionModel(object):
         missing keypoints should be encoded as NaN.
     """
     self._groundtruth_lists[fields.BoxListFields.boxes] = groundtruth_boxes_list
-    self._groundtruth_lists[
-      fields.BoxListFields.classes] = groundtruth_classes_list
+    self._groundtruth_lists[fields.BoxListFields.classes] = groundtruth_classes_list
+    self._groundtruth_lists[fields.BoxListFields.closeness] = groundtruth_closeness_list
 
     if groundtruth_ignore:
       self._groundtruth_lists[fields.BoxListFields.ignore] = groundtruth_ignore
-    if groundtruth_crowd_list:
-      self._groundtruth_lists[fields.BoxListFields.crowd] = groundtruth_crowd_list
     if groundtruth_masks_list:
       self._groundtruth_lists[fields.BoxListFields.masks] = groundtruth_masks_list
     if groundtruth_keypoints_list:
       self._groundtruth_lists[fields.BoxListFields.keypoints] = groundtruth_keypoints_list
+
+
+  def provide_window(self, window_boxes_list, window_classes_list):
+    """Provide window tensors.
+
+    Args:
+      window_boxes_list: a list of 2-D tf.float32 tensors of shape
+        [num_boxes, 4] containing coordinates of the window boxes.
+          Groundtruth boxes are provided in [y_min, x_min, y_max, x_max]
+          format and assumed to be normalized and clipped
+          relative to the image window with y_min <= y_max and x_min <= x_max.
+      window_classes_list: a list of 2-D tf.float32
+        tensors of shape [num_boxes, num_classes + 1] containing the class targets
+        with the 0th index assumed to map to the background class.
+    """
+    self._window_lists[fields.BoxListFields.boxes] = window_boxes_list
+    self._window_lists[fields.BoxListFields.classes] = window_classes_list
+
+  def provide_edgemask(self, groundtruth_edgemask_list):
+    self._edgemask_lists[fields.BoxListFields.edgemask] = groundtruth_edgemask_list
+
+  def provide_image_infos(self, images, filenames):
+    self._image_infos[fields.InputDataFields.original_image] = images
+    self._image_infos[fields.InputDataFields.filename] = filenames
 
   @abstractmethod
   def restore_map(self, from_detection_checkpoint=True):

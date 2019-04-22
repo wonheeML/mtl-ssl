@@ -15,11 +15,12 @@
 
 """Function to build box predictor from configuration."""
 
+from object_detection.builders import hyperparams_builder
 from object_detection.core import box_predictor
 from object_detection.protos import box_predictor_pb2
 
 
-def build(argscope_fn, box_predictor_config, is_training, num_classes):
+def build(argscope_fn, box_predictor_config, is_training, num_classes, reuse_weights=None):
   """Builds box predictor based on the configuration.
 
   Builds box predictor based on the configuration. See box_predictor.proto for
@@ -63,7 +64,8 @@ def build(argscope_fn, box_predictor_config, is_training, num_classes):
         dropout_keep_prob=conv_box_predictor.dropout_keep_probability,
         kernel_size=conv_box_predictor.kernel_size,
         box_code_size=conv_box_predictor.box_code_size,
-        apply_sigmoid_to_scores=conv_box_predictor.apply_sigmoid_to_scores)
+        apply_sigmoid_to_scores=conv_box_predictor.apply_sigmoid_to_scores,
+        reuse_weights=reuse_weights)
     return box_predictor_object
 
   if box_predictor_oneof == 'mask_rcnn_box_predictor':
@@ -74,6 +76,15 @@ def build(argscope_fn, box_predictor_config, is_training, num_classes):
     if mask_rcnn_box_predictor.HasField('conv_hyperparams'):
       conv_hyperparams = argscope_fn(mask_rcnn_box_predictor.conv_hyperparams,
                                      is_training)
+    if mask_rcnn_box_predictor.HasField('box_initializer'):
+      box_initializer = hyperparams_builder._build_initializer(
+          mask_rcnn_box_predictor.box_initializer)
+    else:
+      for fc_op in fc_hyperparams.keys():
+        if 'fully_connected' in fc_op:
+          break
+      # fc_op = fc_hyperparams.keys()[0]
+      box_initializer = fc_hyperparams[fc_op]['weights_initializer']
     box_predictor_object = box_predictor.MaskRCNNBoxPredictor(
         is_training=is_training,
         num_classes=num_classes,
@@ -81,11 +92,17 @@ def build(argscope_fn, box_predictor_config, is_training, num_classes):
         use_dropout=mask_rcnn_box_predictor.use_dropout,
         dropout_keep_prob=mask_rcnn_box_predictor.dropout_keep_probability,
         box_code_size=mask_rcnn_box_predictor.box_code_size,
+        min_depth=mask_rcnn_box_predictor.min_depth,
+        max_depth=mask_rcnn_box_predictor.max_depth,
+        num_layers_before_predictor=mask_rcnn_box_predictor.num_layers_before_predictor,
+        box_initializer=box_initializer,
+        spatial_average=mask_rcnn_box_predictor.spatial_average,
         conv_hyperparams=conv_hyperparams,
         predict_instance_masks=mask_rcnn_box_predictor.predict_instance_masks,
         mask_prediction_conv_depth=(mask_rcnn_box_predictor.
                                     mask_prediction_conv_depth),
-        predict_keypoints=mask_rcnn_box_predictor.predict_keypoints)
+        predict_keypoints=mask_rcnn_box_predictor.predict_keypoints,
+        reuse_weights=reuse_weights)
     return box_predictor_object
 
   if box_predictor_oneof == 'rfcn_box_predictor':
@@ -101,7 +118,8 @@ def build(argscope_fn, box_predictor_config, is_training, num_classes):
         num_spatial_bins=[rfcn_box_predictor.num_spatial_bins_height,
                           rfcn_box_predictor.num_spatial_bins_width],
         depth=rfcn_box_predictor.depth,
-        box_code_size=rfcn_box_predictor.box_code_size)
+        box_code_size=rfcn_box_predictor.box_code_size,
+        reuse_weights=reuse_weights)
     return box_predictor_object
 
   raise ValueError('Unknown box predictor: {}'.format(box_predictor_oneof))

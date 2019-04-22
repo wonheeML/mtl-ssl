@@ -28,6 +28,7 @@ from tensorflow.python.training import saver as saver_lib
 from object_detection.builders import model_builder
 from object_detection.core import standard_fields as fields
 from object_detection.data_decoders import tf_example_decoder
+from object_detection.utils import ops
 
 slim = tf.contrib.slim
 
@@ -216,11 +217,13 @@ def _add_output_tensor_nodes(postprocessed_tensors,
   classes = postprocessed_tensors.get('detection_classes') + label_id_offset
   masks = postprocessed_tensors.get('detection_masks')
   num_detections = postprocessed_tensors.get('num_detections')
+
   outputs = {}
   outputs['detection_boxes'] = tf.identity(boxes, name='detection_boxes')
   outputs['detection_scores'] = tf.identity(scores, name='detection_scores')
   outputs['detection_classes'] = tf.identity(classes, name='detection_classes')
   outputs['num_detections'] = tf.identity(num_detections, name='num_detections')
+
   if masks is not None:
     outputs['detection_masks'] = tf.identity(masks, name='detection_masks')
   for output_key in outputs:
@@ -234,15 +237,12 @@ def _add_debugging_tensor_nodes(outputs, preprocessed_inputs, output_tensors,
                                 output_collection_name='inference_op'):
   outputs['preprocessed_inputs'] = tf.identity(preprocessed_inputs,
                                                name='preprocessed_inputs')
-  #outputs['preprocessed_inputs'] = preprocessed_inputs
   for name, values in output_tensors.iteritems():
     if isinstance(values, dict):
       for k, v in values.iteritems():
         outputs[k+'_1'] = tf.identity(v, name=k) # TODO: how to erase '_1'?
-        #outputs[k+'_1'] = v
     else:
       outputs[name] = tf.identity(values, name=name)
-      #outputs[name] = values
   for output_key in outputs: # duplicated with _add_output_tensor_nodes()
     tf.add_to_collection(output_collection_name, outputs[output_key])
   return outputs
@@ -336,15 +336,24 @@ def _export_inference_graph(input_type,
   saved_model_path = os.path.join(output_directory, 'saved_model')
   model_path = os.path.join(output_directory, 'model.ckpt')
 
+  mtl = detection_model._mtl
+
   if input_type not in input_placeholder_fn_map:
     raise ValueError('Unknown input type: {}'.format(input_type))
   placeholder_tensor, input_tensors = input_placeholder_fn_map[input_type]()
   inputs = tf.to_float(input_tensors)
   preprocessed_inputs = detection_model.preprocess(inputs)
   output_tensors = detection_model.predict(preprocessed_inputs)
+
+  if mtl.edgemask:
+    output_tensors = detection_model.predict_edgemask(output_tensors)
+  if mtl.refine:
+    output_tensors = detection_model.predict_with_mtl_results(output_tensors)
+
   postprocessed_tensors = detection_model.postprocess(output_tensors)
   outputs = _add_output_tensor_nodes(postprocessed_tensors,
                                      output_collection_name)
+
   out_node_names = list(outputs.keys())
   for out_node_name in out_node_names:
     print(out_node_name)

@@ -19,6 +19,7 @@ import logging
 import re
 
 import tensorflow as tf
+from global_utils.custom_utils import log
 
 slim = tf.contrib.slim
 
@@ -72,6 +73,26 @@ def multiply_gradients_matching_regex(grads_and_vars, regex_list, multiplier):
     logging.info('Applying multiplier %f to variable [%s]',
                  multiplier, var.op.name)
   grad_multipliers = {var: float(multiplier) for var in matching_vars}
+  return slim.learning.multiply_gradients(grads_and_vars,
+                                          grad_multipliers)
+
+
+def multiply_gradients_by_scalar_multiplier(grads_and_vars, multiplier):
+  """Multiply gradients.
+
+  Args:
+    grads_and_vars: A list of gradient to variable pairs (tuples).
+    multiplier: A (float) multiplier to apply to each gradient matching the
+      regular expression.
+
+  Returns:
+    grads_and_vars: A list of gradient to variable pairs (tuples).
+  """
+  variables = [pair[1] for pair in grads_and_vars]
+  for var in variables:
+    log.info('Applying multiplier %f to variable [%s]',
+             multiplier, var.op.name)
+  grad_multipliers = {var: float(multiplier) for var in variables}
   return slim.learning.multiply_gradients(grads_and_vars,
                                           grad_multipliers)
 

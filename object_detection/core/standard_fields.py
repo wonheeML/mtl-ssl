@@ -77,7 +77,11 @@ class InputDataFields(object):
   groundtruth_height_pixel = 'groundtruth_height_pixel'
   groundtruth_width_pixel = 'groundtruth_width_pixel'
   groundtruth_ignore = 'groundtruth_ignore'
-
+  groundtruth_subset = 'groundtruth_subset'
+  window_boxes = 'window_boxes'
+  window_classes = 'window_classes'
+  groundtruth_closeness = 'groundtruth_closeness'
+  groundtruth_edgemask_masks = 'groundtruth_edgemask_masks'
 
 class BoxListFields(object):
   """Naming conventions for BoxLists.
@@ -104,6 +108,8 @@ class BoxListFields(object):
   keypoint_heatmaps = 'keypoint_heatmaps'
   ignore = 'ignore'
   crowd = 'crowd'
+  closeness = 'closeness'
+  edgemask = 'edgemask'
 
 
 class TfExampleFields(object):
@@ -160,5 +166,18 @@ class TfExampleFields(object):
   object_label_type = 'image/object/label_type'
   object_height_pixel = 'image/object/height_pixel'
   object_width_pixel = 'image/object/width_pixel'
+  object_subset = 'image/object/subset'
   instance_masks = 'image/segmentation/object'
   instance_classes = 'image/segmentation/object/class'
+  window_bbox_ymin = 'image/window/bbox/ymin'
+  window_bbox_xmin = 'image/window/bbox/xmin'
+  window_bbox_ymax = 'image/window/bbox/ymax'
+  window_bbox_xmax = 'image/window/bbox/xmax'
+  window_labels_text = 'image/window/labels/text'
+  object_closeness_text = 'image/object/closeness/text'
+  edgemask_masks = 'image/edgemask/masks'
+  edgemask_cls_num = 'image/edgemask/cls_num'
+  edgemask_cls_index = 'image/edgemask/cls_index'
+  edgemask_height = 'image/edgemask/height'
+  edgemask_width = 'image/edgemask/width'
+

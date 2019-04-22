@@ -382,6 +382,24 @@ class NonMaximumSuppressionTest(tf.test.TestCase):
         boxlist, max_output_size, iou_threshold)
     self.assertAllClose(nms_boxlist.get(), expected_boxes)
 
+
+  def test_soft_nms(self):
+    boxes = np.array([[0, 0, 20, 20], [10, 0, 30, 20], [0, 10, 20, 30],
+                      [10, 10, 30, 30]],dtype=np.float32)
+    boxlist = np_box_list.BoxList(boxes)
+    boxlist.add_field('scores', np.array([0.9, 0.8, 0.7, 0.6]))
+    max_output_size = 4
+    iou_threshold = 0.3
+
+    expected_boxes = np.array([[0, 0, 20, 20],[10, 10, 30, 30]],dtype=np.float32)
+    nms_boxlist = np_box_list_ops.non_max_suppression(boxlist, max_output_size, iou_threshold)
+    self.assertAllClose(nms_boxlist.get(), expected_boxes)
+
+    nms_boxlist = np_box_list_ops.soft_non_max_suppression(boxlist, max_output_size, iou_threshold)
+    expected_scores = np.flip(np.sort([0.9, 0.8*(1-1./3)*(1-1./3), 0.7*(1-1./3)*(1-1./3), 0.6]), 0)
+    self.assertAllClose(nms_boxlist.get_field('scores'), expected_scores)
+
+
   def test_multiclass_nms(self):
     boxlist = np_box_list.BoxList(
         np.array(

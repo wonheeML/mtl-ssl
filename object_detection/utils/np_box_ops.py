@@ -95,3 +95,48 @@ def ioa(boxes1, boxes2):
   intersect = intersection(boxes1, boxes2)
   areas = np.expand_dims(area(boxes2), axis=0)
   return intersect / areas
+
+
+def intersection_boxes(boxes1, boxes2, index1, index2):
+  """Return pairwise intersection boxes.
+
+  Args:
+    boxes1: a numpy array with shape [N, 4] holding N boxes
+    boxes2: a numpy array with shape [M, 4] holding M boxes
+
+  Returns:
+    a numpy array with shape [P, 4] holding P boxes
+  """
+  n_boxes1 = boxes1.shape[0]
+  n_boxes2 = boxes2.shape[0]
+
+  [y_min1, x_min1, y_max1, x_max1] = np.split(boxes1, 4, axis=1)
+  [y_min2, x_min2, y_max2, x_max2] = np.split(boxes2, 4, axis=1)
+
+  all_pairs_min_ymax = np.minimum(y_max1, np.transpose(y_max2))
+  all_pairs_max_ymin = np.maximum(y_min1, np.transpose(y_min2))
+  intersect_heights = np.maximum(
+      np.zeros(all_pairs_max_ymin.shape),
+      all_pairs_min_ymax - all_pairs_max_ymin)
+  all_pairs_min_xmax = np.minimum(x_max1, np.transpose(x_max2))
+  all_pairs_max_xmin = np.maximum(x_min1, np.transpose(x_min2))
+  intersect_widths = np.maximum(
+      np.zeros(all_pairs_max_xmin.shape),
+      all_pairs_min_xmax - all_pairs_max_xmin)
+  result_boxes = []
+  result_index = []
+
+  for j in range(n_boxes1):
+    index_j = index1[j]
+    int_j = int(index_j[0])
+    for i in range(n_boxes2):
+      index_i = index2[i]
+      int_i = int(index_i[0])
+      if int_j >= int_i:
+        continue
+      if len(set(index_j).intersection(set(index_i))) == 0:
+        if intersect_heights[j,i] > 0 and intersect_widths[j,i] > 0:
+          intersection_box = [all_pairs_max_ymin[j,i], all_pairs_max_xmin[j,i], all_pairs_min_ymax[j,i], all_pairs_min_xmax[j,i]]
+          result_boxes.append(intersection_box)
+          result_index.append(index_j + index_i)
+  return np.asarray(result_boxes), np.asarray(result_index)

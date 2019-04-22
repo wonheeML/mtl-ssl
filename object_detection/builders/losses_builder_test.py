@@ -347,5 +347,7 @@ class LossBuilderTest(tf.test.TestCase):
     self.assertAlmostEqual(localization_weight, 0.2)
 
 
+
+
 if __name__ == '__main__':
   tf.test.main()

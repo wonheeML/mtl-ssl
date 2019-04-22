@@ -56,8 +56,8 @@ def build(post_processing_config):
       post_processing_config.batch_non_max_suppression)
   score_converter_fn = _build_score_converter(
       post_processing_config.score_converter)
-  return non_max_suppressor_fn, score_converter_fn
-
+  post_processing_fn = (non_max_suppressor_fn, score_converter_fn)
+  return post_processing_fn
 
 def _build_non_max_suppressor(nms_config):
   """Builds non-max suppresson based on the nms config.

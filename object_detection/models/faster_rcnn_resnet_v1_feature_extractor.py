@@ -43,7 +43,11 @@ class FasterRCNNResnetV1FeatureExtractor(
                is_training,
                first_stage_features_stride,
                reuse_weights=None,
-               weight_decay=0.0):
+               weight_decay=0.0,
+               base_features='block3',
+               freeze_layer='',
+               batch_norm_trainable=False,
+               ):
     """Constructor.
 
     Args:
@@ -61,6 +65,9 @@ class FasterRCNNResnetV1FeatureExtractor(
       raise ValueError('`first_stage_features_stride` must be 8 or 16.')
     self._architecture = architecture
     self._resnet_model = resnet_model
+    self._base_features = base_features
+    self._freeze_layer = freeze_layer
+    self._batch_norm_trainable = batch_norm_trainable
     super(FasterRCNNResnetV1FeatureExtractor, self).__init__(
         is_training, first_stage_features_stride, reuse_weights, weight_decay)
 
@@ -106,6 +113,12 @@ class FasterRCNNResnetV1FeatureExtractor(
             tf.greater_equal(tf.shape(preprocessed_inputs)[2], 33)),
         ['image size must at least be 33 in both height and width.'])
 
+    if self._freeze_layer:
+      n_freeze_layers = int(self._freeze_layer[-1])
+    else:
+      n_freeze_layers = 0
+    block_trainable = [False] * n_freeze_layers + [self._is_training] * (4-n_freeze_layers)
+
     with tf.control_dependencies([shape_assert]):
       # Disables batchnorm for fine-tuning with smaller batch sizes.
       # TODO: Figure out if it is needed when image batch size is bigger.
@@ -113,7 +126,10 @@ class FasterRCNNResnetV1FeatureExtractor(
           resnet_utils.resnet_arg_scope(
               batch_norm_epsilon=1e-5,
               batch_norm_scale=True,
-              weight_decay=self._weight_decay)):
+              weight_decay=self._weight_decay,
+              trainable=self._is_training,
+              batch_norm_trainable=self._is_training and self._batch_norm_trainable
+          )):
         with tf.variable_scope(
             self._architecture, reuse=self._reuse_weights) as var_scope:
           _, activations = self._resnet_model(
@@ -123,9 +139,10 @@ class FasterRCNNResnetV1FeatureExtractor(
               global_pool=False,
               output_stride=self._first_stage_features_stride,
               spatial_squeeze=False,
+              block_trainable=block_trainable,
               scope=var_scope)
 
-    handle = scope + '/%s/block3' % self._architecture
+    handle = scope + '/%s/%s' % (self._architecture, self._base_features)
     return activations[handle]
 
   def _extract_box_classifier_features(self, proposal_feature_maps, scope):
@@ -147,7 +164,10 @@ class FasterRCNNResnetV1FeatureExtractor(
           resnet_utils.resnet_arg_scope(
               batch_norm_epsilon=1e-5,
               batch_norm_scale=True,
-              weight_decay=self._weight_decay)):
+              weight_decay=self._weight_decay,
+              trainable=self._is_training,
+              batch_norm_trainable=self._is_training and self._batch_norm_trainable
+          )):
         with slim.arg_scope([slim.batch_norm], is_training=False):
           blocks = [
               resnet_utils.Block('block4', resnet_v1.bottleneck, [{
@@ -156,8 +176,12 @@ class FasterRCNNResnetV1FeatureExtractor(
                   'stride': 1
               }] * 3)
           ]
-          proposal_classifier_features = resnet_utils.stack_blocks_dense(
-              proposal_feature_maps, blocks)
+          if self._is_training:
+            proposal_classifier_features = resnet_utils.stack_blocks_dense(
+                proposal_feature_maps, blocks)
+          else:
+            proposal_classifier_features = resnet_utils.stack_blocks_dense(
+                proposal_feature_maps, blocks, block_trainable=[False,False,False,False])
     return proposal_classifier_features
 
 
@@ -168,7 +192,11 @@ class FasterRCNNResnet50FeatureExtractor(FasterRCNNResnetV1FeatureExtractor):
                is_training,
                first_stage_features_stride,
                reuse_weights=None,
-               weight_decay=0.0):
+               weight_decay=0.0,
+               base_features='block3',
+               freeze_layer='',
+               batch_norm_trainable=False,
+               ):
     """Constructor.
 
     Args:
@@ -183,7 +211,8 @@ class FasterRCNNResnet50FeatureExtractor(FasterRCNNResnetV1FeatureExtractor):
     """
     super(FasterRCNNResnet50FeatureExtractor, self).__init__(
         'resnet_v1_50', resnet_v1.resnet_v1_50, is_training,
-        first_stage_features_stride, reuse_weights, weight_decay)
+        first_stage_features_stride, reuse_weights, weight_decay,
+        base_features, freeze_layer, batch_norm_trainable)
 
 
 class FasterRCNNResnet101FeatureExtractor(FasterRCNNResnetV1FeatureExtractor):
@@ -193,7 +222,11 @@ class FasterRCNNResnet101FeatureExtractor(FasterRCNNResnetV1FeatureExtractor):
                is_training,
                first_stage_features_stride,
                reuse_weights=None,
-               weight_decay=0.0):
+               weight_decay=0.0,
+               base_features='block3',
+               freeze_layer='',
+               batch_norm_trainable=False,
+               ):
     """Constructor.
 
     Args:
@@ -208,7 +241,8 @@ class FasterRCNNResnet101FeatureExtractor(FasterRCNNResnetV1FeatureExtractor):
     """
     super(FasterRCNNResnet101FeatureExtractor, self).__init__(
         'resnet_v1_101', resnet_v1.resnet_v1_101, is_training,
-        first_stage_features_stride, reuse_weights, weight_decay)
+        first_stage_features_stride, reuse_weights, weight_decay,
+        base_features, freeze_layer, batch_norm_trainable)
 
 
 class FasterRCNNResnet152FeatureExtractor(FasterRCNNResnetV1FeatureExtractor):
@@ -218,7 +252,11 @@ class FasterRCNNResnet152FeatureExtractor(FasterRCNNResnetV1FeatureExtractor):
                is_training,
                first_stage_features_stride,
                reuse_weights=None,
-               weight_decay=0.0):
+               weight_decay=0.0,
+               base_features='block3',
+               freeze_layer='',
+               batch_norm_trainable=False,
+               ):
     """Constructor.
 
     Args:
@@ -233,4 +271,6 @@ class FasterRCNNResnet152FeatureExtractor(FasterRCNNResnetV1FeatureExtractor):
     """
     super(FasterRCNNResnet152FeatureExtractor, self).__init__(
         'resnet_v1_152', resnet_v1.resnet_v1_152, is_training,
-        first_stage_features_stride, reuse_weights, weight_decay)
+        first_stage_features_stride, reuse_weights, weight_decay,
+        base_features, freeze_layer, batch_norm_trainable)
+

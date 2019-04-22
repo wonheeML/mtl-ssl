@@ -38,10 +38,10 @@ class ObjectDetectionEvaluationTest(tf.test.TestCase):
     groundtruth_boxes2 = np.array([[10, 10, 11, 11], [500, 500, 510, 510],
                                    [10, 10, 12, 12]], dtype=float)
     groundtruth_class_labels2 = np.array([0, 0, 2], dtype=int)
-    groundtruth_is_difficult_list2 = np.array([False, True, False], dtype=bool)
+    subset_list2 = np.array(['default', '', 'default'])
     self.od_eval.add_single_ground_truth_image_info(
         image_key2, groundtruth_boxes2, groundtruth_class_labels2,
-        groundtruth_is_difficult_list2)
+        subset_list2)
     image_key3 = "img3"
     groundtruth_boxes3 = np.array([[0, 0, 1, 1]], dtype=float)
     groundtruth_class_labels3 = np.array([1], dtype=int)
@@ -61,17 +61,25 @@ class ObjectDetectionEvaluationTest(tf.test.TestCase):
     expected_num_gt_instances_per_class = np.array([3, 1, 2], dtype=int)
     expected_num_gt_imgs_per_class = np.array([2, 1, 2], dtype=int)
     self.assertTrue(np.array_equal(expected_num_gt_instances_per_class,
-                                   self.od_eval.num_gt_instances_per_class))
+                                   self.od_eval.num_gt_instances_per_class[
+                                     'default']))
     self.assertTrue(np.array_equal(expected_num_gt_imgs_per_class,
                                    self.od_eval.num_gt_imgs_per_class))
     groundtruth_boxes2 = np.array([[10, 10, 11, 11], [500, 500, 510, 510],
                                    [10, 10, 12, 12]], dtype=float)
     self.assertTrue(np.allclose(self.od_eval.groundtruth_boxes["img2"],
                                 groundtruth_boxes2))
-    groundtruth_is_difficult_list2 = np.array([False, True, False], dtype=bool)
-    self.assertTrue(np.allclose(
-        self.od_eval.groundtruth_is_difficult_list["img2"],
-        groundtruth_is_difficult_list2))
+    expected_groundtruth_subset = {
+      'img1': np.array([True, True, True]),
+      'img2': np.array([True, False, True]),
+      'img3': np.array([True])
+    }
+    for key in expected_groundtruth_subset:
+      self.assertTrue(
+        np.allclose(
+          self.od_eval.groundtruth_subset['default'][key],
+          expected_groundtruth_subset[key]
+        ))
     groundtruth_class_labels1 = np.array([0, 2, 0], dtype=int)
     self.assertTrue(np.array_equal(self.od_eval.groundtruth_class_labels[
         "img1"], groundtruth_class_labels1))
@@ -85,10 +93,11 @@ class ObjectDetectionEvaluationTest(tf.test.TestCase):
                                                                 dtype=int)
     for i in range(self.od_eval.num_class):
       for j in range(len(expected_scores_per_class[i])):
-        self.assertTrue(np.allclose(expected_scores_per_class[i][j],
-                                    self.od_eval.scores_per_class[i][j]))
+        self.assertTrue(np.allclose(
+            expected_scores_per_class[i][j],
+            self.od_eval.scores_per_class['default'][i][j]))
         self.assertTrue(np.array_equal(expected_tp_fp_labels_per_class[i][
-            j], self.od_eval.tp_fp_labels_per_class[i][j]))
+            j], self.od_eval.tp_fp_labels_per_class['default'][i][j]))
     self.assertTrue(np.array_equal(
         expected_num_images_correctly_detected_per_class,
         self.od_eval.num_images_correctly_detected_per_class))
@@ -111,13 +120,13 @@ class ObjectDetectionEvaluationTest(tf.test.TestCase):
     expected_mean_corloc = 0.0
     for i in range(self.od_eval.num_class):
       self.assertTrue(np.allclose(expected_precisions_per_class[i],
-                                  precisions_per_class[i]))
+                                  precisions_per_class['default'][i]))
       self.assertTrue(np.allclose(expected_recalls_per_class[i],
-                                  recalls_per_class[i]))
+                                  recalls_per_class['default'][i]))
     self.assertTrue(np.allclose(expected_average_precision_per_class,
-                                average_precision_per_class))
+                                average_precision_per_class['default']))
     self.assertTrue(np.allclose(expected_corloc_per_class, corloc_per_class))
-    self.assertAlmostEqual(expected_mean_ap, mean_ap)
+    self.assertAlmostEqual(expected_mean_ap, mean_ap['default'])
     self.assertAlmostEqual(expected_mean_corloc, mean_corloc)
 
 

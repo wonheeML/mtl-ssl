@@ -21,7 +21,7 @@ from object_detection.utils import learning_schedules
 slim = tf.contrib.slim
 
 
-def build(optimizer_config, global_summaries):
+def build(optimizer_config, global_summaries, summary_tag=None):
   """Create optimizer based on config.
 
   Args:
@@ -40,7 +40,7 @@ def build(optimizer_config, global_summaries):
   if optimizer_type == 'rms_prop_optimizer':
     config = optimizer_config.rms_prop_optimizer
     optimizer = tf.train.RMSPropOptimizer(
-        _create_learning_rate(config.learning_rate, global_summaries),
+        _create_learning_rate(config.learning_rate, global_summaries, summary_tag),
         decay=config.decay,
         momentum=config.momentum_optimizer_value,
         epsilon=config.epsilon)
@@ -48,13 +48,16 @@ def build(optimizer_config, global_summaries):
   if optimizer_type == 'momentum_optimizer':
     config = optimizer_config.momentum_optimizer
     optimizer = tf.train.MomentumOptimizer(
-        _create_learning_rate(config.learning_rate, global_summaries),
+        _create_learning_rate(config.learning_rate, global_summaries, summary_tag),
         momentum=config.momentum_optimizer_value)
 
   if optimizer_type == 'adam_optimizer':
     config = optimizer_config.adam_optimizer
     optimizer = tf.train.AdamOptimizer(
-        _create_learning_rate(config.learning_rate, global_summaries))
+        _create_learning_rate(config.learning_rate, global_summaries, summary_tag),
+        beta1=config.beta1,
+        beta2=config.beta2,
+        epsilon=config.epsilon)
 
   if optimizer is None:
     raise ValueError('Optimizer %s not supported.' % optimizer_type)
@@ -66,7 +69,7 @@ def build(optimizer_config, global_summaries):
   return optimizer
 
 
-def _create_learning_rate(learning_rate_config, global_summaries):
+def _create_learning_rate(learning_rate_config, global_summaries, summary_tag=None):
   """Create optimizer learning rate based on config.
 
   Args:
@@ -108,5 +111,8 @@ def _create_learning_rate(learning_rate_config, global_summaries):
   if learning_rate is None:
     raise ValueError('Learning_rate %s not supported.' % learning_rate_type)
 
-  global_summaries.add(tf.summary.scalar('Learning Rate', learning_rate))
+  suffix = ''
+  if summary_tag is not None:
+    suffix = '_' + summary_tag
+  global_summaries.add(tf.summary.scalar('Learning_Rate' + suffix, learning_rate))
   return learning_rate

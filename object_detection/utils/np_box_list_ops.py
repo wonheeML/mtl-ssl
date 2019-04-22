@@ -63,6 +63,29 @@ def intersection(boxlist1, boxlist2):
   return np_box_ops.intersection(boxlist1.get(), boxlist2.get())
 
 
+def intersection_boxes(boxlist1, boxlist2):
+  """Compute pairwise intersection areas between boxes.
+
+  Args:
+    boxlist1: BoxList holding N boxes
+    boxlist2: BoxList holding M boxes
+
+  Returns:
+    intersection BoxList holding P boxes
+  """
+  assert (boxlist1.has_field('index'))
+  assert (boxlist2.has_field('index'))
+  boxes, indices = np_box_ops.intersection_boxes(
+    boxlist1.get(), boxlist2.get(), boxlist1.get_field('index'), boxlist2.get_field('index'))
+
+  if boxes.size > 0:
+    box_list = np_box_list.BoxList(boxes)
+    box_list.add_field('index', indices)
+    return box_list
+  else:
+    return []
+
+
 def iou(boxlist1, boxlist2):
   """Computes pairwise intersection-over-union between box collections.
 
@@ -231,6 +254,115 @@ def non_max_suppression(boxlist,
             is_index_valid[valid_indices],
             intersect_over_union <= iou_threshold)
   return gather(boxlist, np.array(selected_indices))
+
+
+def soft_non_max_suppression(boxlist,
+                             max_output_size=10000,
+                             iou_threshold=1.0,
+                             score_threshold=-10.0,
+                             nms_type=1,
+                             sigma=0.5):
+  """Soft Non maximum suppression.
+
+  This is an extended version of traditional NMS named soft-NMS
+  Bodla, Navaneeth, et al. "Improving Object Detection With One Line of Code."
+    arXiv preprint arXiv:1704.04503 (2017).
+
+  Args:
+    boxlist: BoxList holding N boxes.  Must contain a 'scores' field
+      representing detection scores. All scores belong to the same class.
+    max_output_size: maximum number of retained boxes
+    iou_threshold: intersection over union threshold.
+    score_threshold: minimum score threshold. Remove the boxes with scores
+                     less than this value. Default value is set to -10. A very
+                     low threshold to pass pretty much all the boxes, unless
+                     the user sets a different score threshold.
+    nms_type: 1(nms), 2(soft-nms linear), 3(soft-nms gaussian)
+    sigma: parameter of gaussian function type
+
+  Returns:
+    a BoxList holding M boxes where M <= max_output_size
+  Raises:
+    ValueError: if not 1 <= nms_type <= 3
+    ValueError: if 'scores' field does not exist
+    ValueError: if threshold is not in [0, 1]
+    ValueError: if max_output_size < 0
+  """
+  def nms_weight_function(intersect_over_union, nms_type, iou_threshold, sigma):
+    if nms_type == 1: # traditional weight
+      return (intersect_over_union < iou_threshold).astype(np.float32)
+    elif nms_type == 2: # soft-NMS linear version
+      intersect_over_union[intersect_over_union < iou_threshold] = 0
+      return 1 - intersect_over_union
+    elif  nms_type == 3: # soft-NMS gaussian version
+      return np.exp(- np.square(intersect_over_union) / sigma)
+    else:
+      raise ValueError('nms_type range (1~3)')
+
+  if not boxlist.has_field('scores'):
+    raise ValueError('Field scores does not exist')
+  if iou_threshold < 0. or iou_threshold > 1.0:
+    raise ValueError('IOU threshold must be in [0, 1]')
+  if max_output_size < 0:
+    raise ValueError('max_output_size must be bigger than 0.')
+
+  boxlist = filter_scores_greater_than(boxlist, score_threshold)
+  if boxlist.num_boxes() == 0:
+    return boxlist
+
+  boxlist = sort_by_field(boxlist, 'scores')
+
+  # Prevent further computation if NMS is disabled.
+  if iou_threshold == 1.0:
+    if boxlist.num_boxes() > max_output_size:
+      selected_indices = np.arange(max_output_size)
+      return gather(boxlist, selected_indices)
+    else:
+      return boxlist
+
+  boxes = boxlist.get()
+  scores = boxlist.get_field('scores')
+  num_boxes = boxlist.num_boxes()
+  # is_index_valid is True only for all remaining valid boxes,
+  is_index_valid = np.full(num_boxes, 1, dtype=bool)
+  num_output = 0
+  for i in xrange(num_boxes):
+    if num_output < max_output_size:
+      # ind_max = np.argmax(scores*is_index_valid.astype(np.int))
+      # score_max = scores[ind_max]
+      # if score_max <= score_threshold:
+      #   break
+
+      ind_max = -1
+      score_max = score_threshold
+      for j in xrange(num_boxes):
+        if is_index_valid[j] == True and scores[j] > score_max:
+          ind_max = j
+          score_max = scores[j]
+
+      if score_max > score_threshold:
+        num_output += 1
+        is_index_valid[ind_max] = False
+        valid_indices = np.where(is_index_valid)[0]
+        if valid_indices.size == 0:
+          break
+
+        intersect_over_union = np_box_ops.iou(
+            np.expand_dims(boxes[ind_max, :], axis=0), boxes[valid_indices, :])
+        intersect_over_union = np.squeeze(intersect_over_union, axis=0)
+        scores[valid_indices] = scores[valid_indices] * nms_weight_function(intersect_over_union, nms_type, iou_threshold, sigma)
+      else:
+        break
+
+  boxlist = filter_scores_greater_than(boxlist, max(0.0, score_threshold))
+  boxlist = sort_by_field(boxlist, 'scores')
+  if boxlist.num_boxes() > max_output_size:
+    selected_indices = np.arange(max_output_size)
+    return gather(boxlist, selected_indices)
+  else:
+    return boxlist
+
+  return boxlist
 
 
 def multi_class_non_max_suppression(boxlist, score_thresh, iou_thresh,

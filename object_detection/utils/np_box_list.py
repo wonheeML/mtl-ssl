@@ -75,9 +75,19 @@ class BoxList(object):
           data does not matches the number of boxes.
     """
     if self.has_field(field):
-      raise ValueError('Field ' + field + 'already exists')
+      raise ValueError('Field ' + field + ' already exists')
     if len(field_data.shape) < 1 or field_data.shape[0] != self.num_boxes():
       raise ValueError('Invalid dimensions for field data')
+    self.data[field] = field_data
+
+  def set_field(self, field, field_data):
+    """Set data to a specified field.
+
+    Args:
+      field: a string parameter used to speficy a related field to be accessed.
+      field_data: a numpy array of [N, ...] representing the data associated
+          with the field.
+    """
     self.data[field] = field_data
 
   def get(self):

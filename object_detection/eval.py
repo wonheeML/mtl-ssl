@@ -59,6 +59,7 @@ from object_detection.protos import pipeline_pb2
 from object_detection.utils import label_map_util
 from global_utils import custom_utils as utils
 
+
 tf.logging.set_verbosity(tf.logging.INFO)
 
 flags = tf.app.flags
@@ -78,8 +79,11 @@ flags.DEFINE_string('input_config_path', '',
                     'Path to an input_reader_pb2.InputReader config file.')
 flags.DEFINE_string('model_config_path', '',
                     'Path to a model_pb2.DetectionModel config file.')
+flags.DEFINE_string("eval_tag", "",
+                    """A simple string for discerning a evaluation instance.""")
 tf.app.flags.DEFINE_float('gpu_fraction', '0.0',
                           """GPU memory fraction""")
+flags.DEFINE_string('eval_label', '', """Testing Label""")
 FLAGS = flags.FLAGS
 
 
@@ -99,7 +103,7 @@ def get_configs_from_pipeline_file():
 
   model_config = pipeline_config.model
   eval_config = pipeline_config.eval_config
-  if FLAGS.eval_training_data: # XXX
+  if FLAGS.eval_training_data:
     input_config = pipeline_config.train_input_reader
   else:
     input_config = pipeline_config.eval_input_reader
@@ -159,7 +163,7 @@ def get_configs_from_checkpoint_dir():
     text_format.Merge(f.read(), model_config)
 
   input_config = input_reader_pb2.InputReader()
-  if FLAGS.eval_training_data: # XXX
+  if FLAGS.eval_training_data:
     input_config_path = os.path.join(FLAGS.checkpoint_dir, 'train_input.config')
   else:
     input_config_path = os.path.join(FLAGS.checkpoint_dir, 'eval_input.config')
@@ -168,20 +172,28 @@ def get_configs_from_checkpoint_dir():
 
   return model_config, eval_config, input_config
 
+def eval_main(max_number_of_evaluations=None):
+  if FLAGS.eval_label:
+    if FLAGS.pipeline_config_path == '':
+      FLAGS.pipeline_config_path = '../configs/test/' + FLAGS.eval_label + '.config'
+    if FLAGS.checkpoint_dir == '':
+      FLAGS.checkpoint_dir = '../checkpoints/train/' + FLAGS.eval_label
+    FLAGS.eval_dir = '../checkpoints/eval/' + FLAGS.eval_label
+    FLAGS.eval_tag = FLAGS.eval_label
 
-def main(unused_argv):
   assert FLAGS.checkpoint_dir, '`checkpoint_dir` is missing.'
 
   if FLAGS.pipeline_config_path:
     model_config, eval_config, input_config = get_configs_from_pipeline_file()
   elif FLAGS.eval_config_path:
     model_config, eval_config, input_config = get_configs_from_multiple_files()
-  else: # if there's no config file given, use same configs as training
+  else:
     model_config, eval_config, input_config = get_configs_from_checkpoint_dir()
 
   if not FLAGS.eval_dir:
-    eval_tag = time.strftime("%Y%m%d-%H%M%S")
-    FLAGS.eval_dir = utils.mkdir_p(FLAGS.checkpoint_dir + '_eval_' + eval_tag)
+    if not FLAGS.eval_tag:
+      FLAGS.eval_tag = time.strftime("%Y%m%d-%H%M%S")
+    FLAGS.eval_dir = utils.mkdir_p(FLAGS.checkpoint_dir + '_eval_' + FLAGS.eval_tag)
 
   model_fn = functools.partial(
       model_builder.build,
@@ -199,11 +211,25 @@ def main(unused_argv):
   max_num_classes = max([item.id for item in label_map.item])
   categories = label_map_util.convert_label_map_to_categories(
       label_map, max_num_classes)
-  evaluator.evaluate(
-      create_input_dict_fn, model_fn, eval_config, categories,
-      FLAGS.checkpoint_dir, FLAGS.eval_dir, num_examples,
-      FLAGS.gpu_fraction)
 
+  evaluator.evaluate(
+    create_input_dict_fn, model_fn, eval_config, categories,
+    FLAGS.checkpoint_dir, FLAGS.eval_dir, num_examples,
+    FLAGS.gpu_fraction, max_number_of_evaluations)
+
+def main(unused_argv):
+  eval_label_list = FLAGS.eval_label.split(',')
+  if not FLAGS.eval_label or len(eval_label_list)==1:
+    eval_main()
+  else:
+    while True:
+      for eval_label in eval_label_list:
+        FLAGS.eval_label = eval_label
+        FLAGS.pipeline_config_path = ''
+        FLAGS.checkpoint_dir = ''
+        tf.reset_default_graph()
+        eval_main(max_number_of_evaluations=1)
+      break
 
 if __name__ == '__main__':
   tf.app.run()

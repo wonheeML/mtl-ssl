@@ -72,7 +72,8 @@ def build(hyperparams_config, is_training):
           hyperparams_config.initializer),
       activation_fn=_build_activation_fn(hyperparams_config.activation),
       normalizer_fn=batch_norm,
-      normalizer_params=batch_norm_params) as sc:
+      normalizer_params=batch_norm_params,
+      trainable=is_training) as sc:
     return sc
 
 
@@ -134,6 +135,10 @@ def _build_initializer(initializer):
     return tf.truncated_normal_initializer(
         mean=initializer.truncated_normal_initializer.mean,
         stddev=initializer.truncated_normal_initializer.stddev)
+  if initializer_oneof == 'random_normal_initializer':
+    return tf.random_normal_initializer(
+        mean=initializer.random_normal_initializer.mean,
+        stddev=initializer.random_normal_initializer.stddev)
   if initializer_oneof == 'variance_scaling_initializer':
     enum_descriptor = (hyperparams_pb2.VarianceScalingInitializer.
                        DESCRIPTOR.enum_types_by_name['Mode'])
@@ -165,5 +170,6 @@ def _build_batch_norm_params(batch_norm, is_training):
       'epsilon': batch_norm.epsilon,
       'fused': True,
       'is_training': is_training and batch_norm.train,
+      'trainable': is_training
   }
   return batch_norm_params

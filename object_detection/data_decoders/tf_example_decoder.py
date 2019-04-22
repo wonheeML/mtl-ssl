@@ -51,10 +51,25 @@ class TfExampleDecoder(data_decoder.DataDecoder):
         'image/object/label_type': tf.VarLenFeature(tf.string),
         'image/object/height_pixel': tf.VarLenFeature(tf.float32),
         'image/object/width_pixel': tf.VarLenFeature(tf.float32),
+        'image/object/subset': tf.VarLenFeature(tf.string),
 
         # Instance masks and classes.
         'image/segmentation/object': tf.VarLenFeature(tf.int64),
-        'image/segmentation/object/class': tf.VarLenFeature(tf.int64)
+        'image/segmentation/object/class': tf.VarLenFeature(tf.int64),
+
+        # Window boxes and classes.
+        'image/window/bbox/xmin': tf.VarLenFeature(tf.float32),
+        'image/window/bbox/xmax': tf.VarLenFeature(tf.float32),
+        'image/window/bbox/ymin': tf.VarLenFeature(tf.float32),
+        'image/window/bbox/ymax': tf.VarLenFeature(tf.float32),
+        'image/window/labels/text': tf.VarLenFeature(tf.string),
+
+        'image/object/closeness/text': tf.VarLenFeature(tf.string),
+        'image/edgemask/height': tf.FixedLenFeature((), tf.int64, 1),
+        'image/edgemask/width': tf.FixedLenFeature((), tf.int64, 1),
+        'image/edgemask/cls_num': tf.FixedLenFeature((), tf.int64, 1),
+        'image/edgemask/cls_index': tf.VarLenFeature(tf.int64),
+        'image/edgemask/masks': tf.VarLenFeature(tf.float32)
     }
     self.items_to_handlers = {
         fields.InputDataFields.image: slim_example_decoder.Image(
@@ -83,6 +98,8 @@ class TfExampleDecoder(data_decoder.DataDecoder):
           slim_example_decoder.Tensor('image/object/height_pixel')),
         fields.InputDataFields.groundtruth_width_pixel: (
           slim_example_decoder.Tensor('image/object/width_pixel')),
+        fields.InputDataFields.groundtruth_subset: (
+          slim_example_decoder.Tensor('image/object/subset', default_value='')),
 
         # Instance masks and classes.
         fields.InputDataFields.groundtruth_instance_masks: (
@@ -91,6 +108,19 @@ class TfExampleDecoder(data_decoder.DataDecoder):
                 self._reshape_instance_masks)),
         fields.InputDataFields.groundtruth_instance_classes: (
             slim_example_decoder.Tensor('image/segmentation/object/class')),
+
+        # Window boxes and classes.
+        fields.InputDataFields.window_boxes: (
+            slim_example_decoder.BoundingBox(
+                ['ymin', 'xmin', 'ymax', 'xmax'], 'image/window/bbox/')),
+        fields.InputDataFields.window_classes: (
+            slim_example_decoder.Tensor('image/window/labels/text', default_value='')),
+        fields.InputDataFields.groundtruth_closeness: (
+          slim_example_decoder.Tensor('image/object/closeness/text', default_value='')),
+        fields.InputDataFields.groundtruth_edgemask_masks: (
+          slim_example_decoder.ItemHandlerCallback(
+            ['image/edgemask/masks', 'image/edgemask/height', 'image/edgemask/width'],
+            self._reshape_edgemasks))
     }
 
   def decode(self, tf_example_string_tensor):
@@ -156,3 +186,16 @@ class TfExampleDecoder(data_decoder.DataDecoder):
     to_shape = tf.cast(tf.stack([-1, height, width]), tf.int32)
 
     return tf.cast(tf.reshape(masks, to_shape), tf.bool)
+
+  def _reshape_edgemasks(selfself, keys_to_tensors):
+    edgemask_masks = keys_to_tensors['image/edgemask/masks']
+    if isinstance(edgemask_masks, tf.SparseTensor):
+      edgemask_masks = tf.sparse_tensor_to_dense(edgemask_masks)
+
+    height = keys_to_tensors['image/edgemask/height']
+    width = keys_to_tensors['image/edgemask/width']
+
+    to_shape = tf.cast(tf.stack([-1, height, width]), tf.int32)
+    edgemak_reshape = tf.reshape(edgemask_masks, to_shape)
+
+    return edgemak_reshape

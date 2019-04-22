@@ -44,4 +44,38 @@ message EvalConfig {
 
   // Whether to evaluate instance masks.
   optional bool eval_instance_masks = 12 [default=false];
+
+  // Float determining the IoU threshold at which a box is considered correct.
+  optional float iou_threshold = 13 [default=0.5];
+
+  // Type of NMS (standard|soft-linear|soft-gaussian)
+  optional string nms_type = 14 [default="standard"];
+
+  // NMS IoU threshold.
+  optional float nms_threshold = 15 [default=1.0];
+
+  // Soft NMS sigma.
+  optional float soft_nms_sigma = 16 [default=0.5];
+
+  // coco eval options
+  optional CocoEvalOptions coco_eval_options = 17;
+
+  // main subset
+  optional string main_subset = 18 [default=''];
+
+  optional bool submission_format_output = 19 [default=false];
+
+  optional bool calc_loss = 20 [default=false];
 }
+
+message CocoEvalOptions {
+  // Eval metrics : referr to http://cocodataset.org/#detections-eval
+  repeated int32 eval_metric_index = 1;
+
+  //
+  optional int32 eval_class_type = 2 [default=0];
+
+
+  optional string eval_ann_filename = 3 [default='../data/mscoco/annotations/instances_val2017.json'];
+}
+

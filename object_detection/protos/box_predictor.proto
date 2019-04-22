@@ -12,6 +12,9 @@ message BoxPredictor {
     MaskRCNNBoxPredictor mask_rcnn_box_predictor = 2;
     RfcnBoxPredictor rfcn_box_predictor = 3;
   }
+
+  // Whether to train or not (freeze).
+  optional bool trainable = 4 [default=true];
 }
 
 // Configuration proto for Convolutional box predictor.
@@ -75,6 +78,24 @@ message MaskRCNNBoxPredictor {
 
   // Whether to predict keypoints inside detection boxes.
   optional bool predict_keypoints = 8 [default = false];
+
+  // Minumum feature depth prior to predicting box encodings and class
+  // predictions.
+  optional int32 min_depth = 9 [default = 0];
+
+  // Maximum feature depth prior to predicting box encodings and class
+  // predictions. If max_depth is set to 0, no additional feature map will be
+  // inserted before location and class predictions.
+  optional int32 max_depth = 10 [default = 0];
+
+  // Number of the additional conv layers before the predictor.
+  optional int32 num_layers_before_predictor = 11 [default = 0];
+
+  // Whether to apply spatial averaging to image features.
+  optional bool spatial_average = 12 [default = true];
+
+  // Initializer for the weights of last fc op to get box encodings.
+  optional Initializer box_initializer = 13;
 }
 
 message RfcnBoxPredictor {

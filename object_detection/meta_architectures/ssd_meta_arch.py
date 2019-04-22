@@ -21,6 +21,7 @@ models.
 from abc import abstractmethod
 
 import re
+import collections
 import tensorflow as tf
 
 from object_detection.core import box_list
@@ -29,6 +30,7 @@ from object_detection.core import model
 from object_detection.core import standard_fields as fields
 from object_detection.core import target_assigner
 from object_detection.utils import shape_utils
+from global_utils.custom_utils import log
 
 slim = tf.contrib.slim
 
@@ -144,6 +146,7 @@ class SSDMetaArch(model.DetectionModel):
     # Needed for fine-tuning from classification checkpoints whose
     # variables do not have the feature extractor scope.
     self._extract_features_scope = 'FeatureExtractor'
+    self._box_predictor_scope = 'BoxPredictor'
 
     self._anchor_generator = anchor_generator
     self._box_predictor = box_predictor
@@ -280,13 +283,28 @@ class SSDMetaArch(model.DetectionModel):
     cls_predictions_with_background_list = []
     for idx, (feature_map, num_anchors_per_location
              ) in enumerate(zip(feature_maps, num_anchors_per_location_list)):
-      box_predictor_scope = 'BoxPredictor_{}'.format(idx)
+      box_predictor_scope = self._box_predictor_scope + '_{}'.format(idx)
       box_predictions = self._box_predictor.predict(feature_map,
                                                     num_anchors_per_location,
                                                     box_predictor_scope)
       box_encodings = box_predictions[bpredictor.BOX_ENCODINGS]
       cls_predictions_with_background = box_predictions[
           bpredictor.CLASS_PREDICTIONS_WITH_BACKGROUND]
+
+      feature_maps = collections.OrderedDict()
+      feature_maps['base_feature_map'] = feature_map
+      feature_maps.update(box_predictions[bpredictor.FEATURE_MAPS])
+
+      cls_output_name = next(reversed(feature_maps))
+      assert 'ClassPredictor' in cls_output_name
+      cls_output = feature_maps[cls_output_name]
+      del feature_maps[cls_output_name]
+      box_output_name = next(reversed(feature_maps))
+      assert 'BoxEncodingPredictor' in box_output_name
+      box_output = feature_maps[box_output_name]
+      del feature_maps[box_output_name]
+      output_tensor = tf.concat(axis=-1, values=[box_output, cls_output])
+      feature_maps['output'] = output_tensor
 
       box_encodings_shape = box_encodings.get_shape().as_list()
       if len(box_encodings_shape) != 4 or box_encodings_shape[2] != 1:
@@ -372,6 +390,7 @@ class SSDMetaArch(model.DetectionModel):
                                                       [-1, -1, -1])
       detection_scores = self._score_conversion_fn(
           class_predictions_without_background)
+
       clip_window = tf.constant([0, 0, 1, 1], tf.float32)
       (nmsed_boxes, nmsed_scores, nmsed_classes, _,
        num_detections) = self._non_max_suppression_fn(detection_boxes,
@@ -404,13 +423,13 @@ class SSDMetaArch(model.DetectionModel):
         values.
     """
     with tf.name_scope(scope, 'Loss', prediction_dict.values()):
-      (batch_cls_targets, batch_cls_weights, batch_reg_targets,
-       batch_reg_weights, match_list) = self._assign_targets(
-           self.groundtruth_lists(fields.BoxListFields.boxes),
-           self.groundtruth_lists(fields.BoxListFields.classes),
-           self.groundtruth_lists(fields.BoxListFields.ignore),
-           self.groundtruth_lists(fields.BoxListFields.crowd)
-      )
+      (groundtruth_boxlists, groundtruth_classes_with_background_list
+       ) = self._format_groundtruth_data(with_background=True)
+      (batch_cls_targets, batch_cls_weights, batch_reg_targets, batch_reg_weights,
+       match_list) = target_assigner.batch_assign_targets(
+           self._target_assigner, self.anchors,
+           groundtruth_boxlists, groundtruth_classes_with_background_list)
+
       if self._add_summaries:
         self._summarize_input(
             self.groundtruth_lists(fields.BoxListFields.boxes), match_list)
@@ -447,6 +466,37 @@ class SSDMetaArch(model.DetectionModel):
       }
     return loss_dict
 
+
+  def _format_groundtruth_data(self, with_background=True):
+    groundtruth_boxes_list = self.groundtruth_lists(fields.BoxListFields.boxes)
+    groundtruth_classes_list = self.groundtruth_lists(fields.BoxListFields.classes)
+    groundtruth_ignore_list = self.groundtruth_lists(fields.BoxListFields.ignore)
+    groundtruth_crowd_list = self.groundtruth_lists(fields.BoxListFields.crowd)
+
+    groundtruth_boxlists = [
+        box_list.BoxList(boxes) for boxes in groundtruth_boxes_list
+    ]
+    if with_background:
+      groundtruth_classes_list = [
+          tf.pad(one_hot_encoding, [[0, 0], [1, 0]], mode='CONSTANT')
+          for one_hot_encoding in groundtruth_classes_list
+      ]
+    else:
+      groundtruth_classes_list = [
+          tf.to_float(one_hot_encoding)
+          for one_hot_encoding in groundtruth_classes_list
+      ]
+
+    for gt_boxlist, gt_ignore, gt_crowd \
+        in zip(groundtruth_boxlists, groundtruth_ignore_list, groundtruth_crowd_list):
+      if gt_ignore is not None:
+        gt_boxlist.add_field(fields.BoxListFields.ignore, gt_ignore)
+      if gt_crowd is not None:
+        gt_boxlist.add_field(fields.BoxListFields.crowd, gt_crowd)
+
+    return groundtruth_boxlists, groundtruth_classes_list
+
+  '''
   def _assign_targets(self, groundtruth_boxes_list, groundtruth_classes_list
                       , groundtruth_ignore_list, groundtruth_crowd_list):
     """Assign groundtruth targets.
@@ -498,6 +548,7 @@ class SSDMetaArch(model.DetectionModel):
     return target_assigner.batch_assign_targets(
         self._target_assigner, self.anchors, groundtruth_boxlists,
         groundtruth_classes_with_background_list)
+  '''
 
   def _summarize_input(self, groundtruth_boxes_list, match_list):
     """Creates tensorflow summaries for the input boxes and anchors.
@@ -604,26 +655,38 @@ class SSDMetaArch(model.DetectionModel):
                       tf.stack([combined_shape[0], combined_shape[1],
                                 4]))
 
-  def restore_map(self, from_detection_checkpoint=True):
+
+  def restore_map(self,
+                  from_detection_checkpoint=True,
+                  restore_box_predictor=False):
     """Returns a map of variables to load from a foreign checkpoint.
-
     See parent class for details.
-
     Args:
       from_detection_checkpoint: whether to restore from a full detection
         checkpoint (with compatible variable names) or to restore from a
         classification checkpoint for initialization prior to training.
-
+      restore_box_predictor: Whether to restore the weights of box predictor.
     Returns:
       A dict mapping variable names (to load from a checkpoint) to variables in
       the model graph.
     """
     variables_to_restore = {}
-    for variable in tf.all_variables():
+    for variable in tf.global_variables():
+      var_name = variable.op.name
       if variable.op.name.startswith(self._extract_features_scope):
-        var_name = variable.op.name
         if not from_detection_checkpoint:
-          var_name = (re.split('^' + self._extract_features_scope + '/',
-                               var_name)[-1])
+          var_name = (
+              re.split('^' + self._extract_features_scope + '/', var_name)[-1])
+        log.infov('  Restore [%s]', var_name)
         variables_to_restore[var_name] = variable
+      elif var_name.startswith(self._box_predictor_scope):
+        if not from_detection_checkpoint:
+          var_name = (
+              re.split('^' + self._box_predictor_scope + '/', var_name)[-1])
+        if restore_box_predictor:
+          log.infov('  Restore [%s]', var_name)
+          variables_to_restore[var_name] = variable
+      else:
+        log.warn('  Skip    [%s]', var_name)
+        continue
     return variables_to_restore

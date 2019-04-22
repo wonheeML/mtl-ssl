@@ -16,7 +16,7 @@
 """Utils used to manipulate tensor shapes."""
 
 import tensorflow as tf
-
+from object_detection.utils import static_shape
 
 def _is_tensor(t):
   """Returns a boolean indicating whether the input is a tensor.
@@ -134,3 +134,38 @@ def combined_static_and_dynamic_shape(tensor):
     else:
       combined_shape.append(dynamic_shape[index])
   return combined_shape
+
+
+def check_min_image_dim(min_dim, image_tensor):
+  """Checks that the image width/height are greater than some number.
+  This function is used to check that the width and height of an image are above
+  a certain value. If the image shape is static, this function will perform the
+  check at graph construction time. Otherwise, if the image shape varies, an
+  Assertion control dependency will be added to the graph.
+  Args:
+    min_dim: The minimum number of pixels along the width and height of the
+             image.
+    image_tensor: The image tensor to check size for.
+  Returns:
+    If `image_tensor` has dynamic size, return `image_tensor` with a Assert
+    control dependency. Otherwise returns image_tensor.
+  Raises:
+    ValueError: if `image_tensor`'s' width or height is smaller than `min_dim`.
+  """
+  image_shape = image_tensor.get_shape()
+  image_height = static_shape.get_height(image_shape)
+  image_width = static_shape.get_width(image_shape)
+  if image_height is None or image_width is None:
+    shape_assert = tf.Assert(
+        tf.logical_and(tf.greater_equal(tf.shape(image_tensor)[1], min_dim),
+                       tf.greater_equal(tf.shape(image_tensor)[2], min_dim)),
+        ['image size must be >= {} in both height and width.'.format(min_dim)])
+    with tf.control_dependencies([shape_assert]):
+      return tf.identity(image_tensor)
+
+  if image_height < min_dim or image_width < min_dim:
+    raise ValueError(
+        'image size must be >= %d in both height and width; image dim = %d,%d' %
+        (min_dim, image_height, image_width))
+
+  return image_tensor

@@ -36,6 +36,9 @@ message MomentumOptimizer {
 // See: https://www.tensorflow.org/api_docs/python/tf/train/AdamOptimizer
 message AdamOptimizer {
   optional LearningRate learning_rate = 1;
+  optional float beta1 = 2 [default=0.9];
+  optional float beta2 = 3 [default=0.999];
+  optional float epsilon = 4 [default=0.00000001];
 }
 
 // Configuration message for optimizer learning rate.

@@ -41,7 +41,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import functools
 import tensorflow as tf
+
+from object_detection.utils import kwargs_util
 
 slim = tf.contrib.slim
 
@@ -58,6 +61,7 @@ def vgg_arg_scope(weight_decay=0.0005):
   with slim.arg_scope([slim.conv2d, slim.fully_connected],
                       activation_fn=tf.nn.relu,
                       weights_regularizer=slim.l2_regularizer(weight_decay),
+                      biases_regularizer=tf.no_regularizer,
                       biases_initializer=tf.zeros_initializer()):
     with slim.arg_scope([slim.conv2d], padding='SAME') as arg_sc:
       return arg_sc
@@ -131,6 +135,7 @@ vgg_a.default_image_size = 224
 
 def vgg_16_base(inputs,
                 final_endpoint='pool5',
+                freeze_layer='',
                 trainable=True,
                 scope=None):
   """Oxford Net VGG 16-Layers base network
@@ -150,12 +155,16 @@ def vgg_16_base(inputs,
   Raises:
     ValueError: if final_endpoint is not set to one of the predefined values,
                 or depth_multiplier <= 0  """
+  get_kwargs = functools.partial(kwargs_util.get_layer_kwargs,
+                                 is_training=trainable,
+                                 freeze_layer=freeze_layer,
+                                 batch_norm=False)
   end_points = {}
 
   with tf.variable_scope(scope, ['vgg_16'], [inputs]):
     with slim.arg_scope([slim.conv2d],
                         trainable=trainable):
-      net = slim.repeat(inputs, 2, slim.conv2d, 64, [3, 3], scope='conv1')
+      net = slim.repeat(inputs, 2, slim.conv2d, 64, [3, 3], **get_kwargs(scope='conv1'))
       end_points['conv1'] = net
       if final_endpoint == 'conv1':
         return net, end_points
@@ -165,7 +174,7 @@ def vgg_16_base(inputs,
       if final_endpoint == 'pool1':
         return net, end_points
 
-      net = slim.repeat(net, 2, slim.conv2d, 128, [3, 3], scope='conv2')
+      net = slim.repeat(net, 2, slim.conv2d, 128, [3, 3], **get_kwargs(scope='conv2'))
       end_points['conv2'] = net
       if final_endpoint == 'conv2':
         return net, end_points
@@ -175,7 +184,7 @@ def vgg_16_base(inputs,
       if final_endpoint == 'pool2':
         return net, end_points
 
-      net = slim.repeat(net, 3, slim.conv2d, 256, [3, 3], scope='conv3')
+      net = slim.repeat(net, 3, slim.conv2d, 256, [3, 3], **get_kwargs(scope='conv3'))
       end_points['conv3'] = net
       if final_endpoint == 'conv3':
         return net, end_points
@@ -185,7 +194,7 @@ def vgg_16_base(inputs,
       if final_endpoint == 'pool3':
         return net, end_points
 
-      net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3], scope='conv4')
+      net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3], **get_kwargs(scope='conv4'))
       end_points['conv4'] = net
       if final_endpoint == 'conv4':
         return net, end_points
@@ -195,7 +204,7 @@ def vgg_16_base(inputs,
       if final_endpoint == 'pool4':
         return net, end_points
 
-      net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3], scope='conv5')
+      net = slim.repeat(net, 3, slim.conv2d, 512, [3, 3], **get_kwargs(scope='conv5'))
       end_points['conv5'] = net
       if final_endpoint == 'conv5':
         return net, end_points

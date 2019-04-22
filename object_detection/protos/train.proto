@@ -71,9 +71,27 @@ message TrainConfig {
   // How often to save checkpoint.
   optional uint32 save_interval_secs = 19 [default=600];
 
-  // Whether to restore only backbone weights from checkpoint
-  // If false, restore full networks
-  optional bool restore_backbone_only = 20;
+  // Whether to restore box predictor weights from checkpoint.
+  optional bool restore_box_predictor = 20 [default=false];
+
+  // Whether to divide gradients by batch size.
+  optional bool divide_grad_by_batch = 21 [default=false];
+
+  // If greater than 0, multiplies the gradient of variables by this amount.
+  optional float grad_multiplier = 22 [default=0];
+
+  // Whether to show image summary.
+  optional bool show_image_summary = 23 [default=false];
+
+  optional uint32 save_summaries_secs = 24 [default=120];
+
+  // Whether to restore mtl refiner weights from checkpoint.
+  optional bool restore_mtl_refine = 25 [default=false];
+
+  // Whether to restore mtl weights from checkpoint.
+  optional bool restore_window = 26 [default=false];
+  optional bool restore_closeness = 27 [default=false];
+  optional bool restore_edgemask = 28 [default=false];
 }
 
 message TrainingIgnoreOptions {
@@ -87,8 +105,5 @@ message TrainingIgnoreOptions {
   optional int32 min_width = 3 [default=0];
 
   // Label type
-  repeated string label_type_to_ignore = 5;
-
-  // Hyperparameters for the feature extractor.
-  optional bool ignore_crowd = 6 [default=false];
+  repeated string label_type_to_ignore = 4;
 }

@@ -73,7 +73,8 @@ def bottleneck(inputs,
                rate=1,
                outputs_collections=None,
                scope=None,
-               use_bounded_activations=False):
+               use_bounded_activations=False,
+               last=False):
   """Bottleneck residual unit variant with BN after convolutions.
 
   This is the original residual unit proposed in [1]. See Fig. 1(a) of [2] for
@@ -138,6 +139,7 @@ def resnet_v1(inputs,
               include_root_block=True,
               spatial_squeeze=True,
               reuse=None,
+              block_trainable=[],
               scope=None):
   """Generator for v1 ResNet models.
 
@@ -211,9 +213,14 @@ def resnet_v1(inputs,
             if output_stride % 4 != 0:
               raise ValueError('The output_stride needs to be a multiple of 4.')
             output_stride /= 4
-          net = resnet_utils.conv2d_same(net, 64, 7, stride=2, scope='conv1')
-          net = slim.max_pool2d(net, [3, 3], stride=2, scope='pool1')
-        net = resnet_utils.stack_blocks_dense(net, blocks, output_stride)
+          with slim.arg_scope([slim.conv2d], trainable=False):
+            if block_trainable[0] == False:
+              with slim.arg_scope([slim.conv2d], trainable=False):
+                net = resnet_utils.conv2d_same(net, 64, 7, stride=2, scope='conv1')
+            else:
+              net = resnet_utils.conv2d_same(net, 64, 7, stride=2, scope='conv1')
+            net = slim.max_pool2d(net, [3, 3], stride=2, scope='pool1')
+          net = resnet_utils.stack_blocks_dense(net, blocks, output_stride, block_trainable=block_trainable)
         if global_pool:
           # Global average pooling.
           net = tf.reduce_mean(net, [1, 2], name='pool5', keep_dims=True)
@@ -262,6 +269,7 @@ def resnet_v1_50(inputs,
                  output_stride=None,
                  spatial_squeeze=True,
                  reuse=None,
+                 block_trainable=[],
                  scope='resnet_v1_50'):
   """ResNet-50 model of [1]. See resnet_v1() for arg and return description."""
   blocks = [
@@ -273,7 +281,7 @@ def resnet_v1_50(inputs,
   return resnet_v1(inputs, blocks, num_classes, is_training,
                    global_pool=global_pool, output_stride=output_stride,
                    include_root_block=True, spatial_squeeze=spatial_squeeze,
-                   reuse=reuse, scope=scope)
+                   reuse=reuse, block_trainable=block_trainable, scope=scope)
 resnet_v1_50.default_image_size = resnet_v1.default_image_size
 
 
@@ -284,6 +292,7 @@ def resnet_v1_101(inputs,
                   output_stride=None,
                   spatial_squeeze=True,
                   reuse=None,
+                  block_trainable=[],
                   scope='resnet_v1_101'):
   """ResNet-101 model of [1]. See resnet_v1() for arg and return description."""
   blocks = [
@@ -295,7 +304,7 @@ def resnet_v1_101(inputs,
   return resnet_v1(inputs, blocks, num_classes, is_training,
                    global_pool=global_pool, output_stride=output_stride,
                    include_root_block=True, spatial_squeeze=spatial_squeeze,
-                   reuse=reuse, scope=scope)
+                   reuse=reuse, block_trainable=block_trainable, scope=scope)
 resnet_v1_101.default_image_size = resnet_v1.default_image_size
 
 
@@ -306,6 +315,7 @@ def resnet_v1_152(inputs,
                   output_stride=None,
                   spatial_squeeze=True,
                   reuse=None,
+                  block_trainable=[],
                   scope='resnet_v1_152'):
   """ResNet-152 model of [1]. See resnet_v1() for arg and return description."""
   blocks = [
@@ -317,7 +327,7 @@ def resnet_v1_152(inputs,
   return resnet_v1(inputs, blocks, num_classes, is_training,
                    global_pool=global_pool, output_stride=output_stride,
                    include_root_block=True, spatial_squeeze=spatial_squeeze,
-                   reuse=reuse, scope=scope)
+                   reuse=reuse, block_trainable=block_trainable, scope=scope)
 resnet_v1_152.default_image_size = resnet_v1.default_image_size
 
 
@@ -328,6 +338,7 @@ def resnet_v1_200(inputs,
                   output_stride=None,
                   spatial_squeeze=True,
                   reuse=None,
+                  block_trainable=[],
                   scope='resnet_v1_200'):
   """ResNet-200 model of [2]. See resnet_v1() for arg and return description."""
   blocks = [
@@ -339,5 +350,5 @@ def resnet_v1_200(inputs,
   return resnet_v1(inputs, blocks, num_classes, is_training,
                    global_pool=global_pool, output_stride=output_stride,
                    include_root_block=True, spatial_squeeze=spatial_squeeze,
-                   reuse=reuse, scope=scope)
+                   reuse=reuse, block_trainable=block_trainable, scope=scope)
 resnet_v1_200.default_image_size = resnet_v1.default_image_size

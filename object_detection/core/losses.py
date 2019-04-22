@@ -34,6 +34,8 @@ from object_detection.core import box_list
 from object_detection.core import box_list_ops
 from object_detection.utils import ops
 
+import numpy as np
+
 slim = tf.contrib.slim
 
 
@@ -68,6 +70,15 @@ class Loss(object):
         target_tensor = tf.where(tf.is_nan(target_tensor),
                                  prediction_tensor,
                                  target_tensor)
+
+      num_classes = prediction_tensor.get_shape().as_list()[-1]
+      len1 = len(prediction_tensor.get_shape().as_list())
+      len2 = len(target_tensor.get_shape().as_list())
+      if len1 != len2:
+        prediction_tensor=tf.reshape(prediction_tensor, [-1, num_classes])
+        target_tensor=tf.reshape(target_tensor, [-1, num_classes])
+        prediction_tensor = tf.expand_dims(prediction_tensor, axis=0)
+        target_tensor = tf.expand_dims(target_tensor, axis=0)
       return self._compute_loss(prediction_tensor, target_tensor, **params)
 
   @abstractmethod
@@ -92,16 +103,21 @@ class WeightedL2LocalizationLoss(Loss):
   Loss[b,a] = .5 * ||weights[b,a] * (prediction[b,a,:] - target[b,a,:])||^2
   """
 
-  def __init__(self, anchorwise_output=False):
+  def __init__(self, anchorwise_output=False,
+               over_weight=1.0, under_weight=1.0):
     """Constructor.
 
     Args:
       anchorwise_output: Outputs loss per anchor. (default False)
+      over_weight: Weight for over predicted value. (default 1.0)
+      under_weight: Weight for under predicted value. (default 1.0)
 
     """
     self._anchorwise_output = anchorwise_output
+    self._over_weight = over_weight
+    self._under_weight = under_weight
 
-  def _compute_loss(self, prediction_tensor, target_tensor, weights):
+  def _compute_loss(self, prediction_tensor, target_tensor, weights=None):
     """Compute loss function.
 
     Args:
@@ -115,8 +131,16 @@ class WeightedL2LocalizationLoss(Loss):
       loss: a (scalar) tensor representing the value of the loss function
             or a float tensor of shape [batch_size, num_anchors]
     """
+    if weights is None:
+      weights = tf.ones(tf.shape(target_tensor)[:2])
     weighted_diff = (prediction_tensor - target_tensor) * tf.expand_dims(
         weights, 2)
+    over_indicator = tf.cast(tf.greater(weighted_diff, 0.0), tf.float32)
+    under_indicator = 1.0 - over_indicator
+    additional_weights = (self._over_weight * over_indicator
+                          + self._under_weight * under_indicator)
+    weighted_diff = weighted_diff * additional_weights
+
     square_diff = 0.5 * tf.square(weighted_diff)
     if self._anchorwise_output:
       return tf.reduce_sum(square_diff, 2)
@@ -132,7 +156,7 @@ class WeightedSmoothL1LocalizationLoss(Loss):
   See also Equation (3) in the Fast R-CNN paper by Ross Girshick (ICCV 2015)
   """
 
-  def __init__(self, anchorwise_output=False):
+  def __init__(self, anchorwise_output=False, sigma=1.0):
     """Constructor.
 
     Args:
@@ -140,8 +164,9 @@ class WeightedSmoothL1LocalizationLoss(Loss):
 
     """
     self._anchorwise_output = anchorwise_output
+    self._sigma = sigma
 
-  def _compute_loss(self, prediction_tensor, target_tensor, weights):
+  def _compute_loss(self, prediction_tensor, target_tensor, weights=None):
     """Compute loss function.
 
     Args:
@@ -154,11 +179,17 @@ class WeightedSmoothL1LocalizationLoss(Loss):
     Returns:
       loss: a (scalar) tensor representing the value of the loss function
     """
+    if weights is None:
+      weights = tf.ones(tf.shape(target_tensor)[:2])
     diff = prediction_tensor - target_tensor
     abs_diff = tf.abs(diff)
-    abs_diff_lt_1 = tf.less(abs_diff, 1)
+    sigma_sq = self._sigma ** 2
+    # abs_diff_lt_sigma = tf.stop_gradient(tf.less(abs_diff, 1./sigma_sq))
+    abs_diff_lt_sigma = tf.less(abs_diff, 1./sigma_sq)
     anchorwise_smooth_l1norm = tf.reduce_sum(
-        tf.where(abs_diff_lt_1, 0.5 * tf.square(abs_diff), abs_diff - 0.5),
+        tf.where(abs_diff_lt_sigma,
+                 0.5 * tf.square(abs_diff) * sigma_sq,
+                 abs_diff - (0.5 / sigma_sq)),
         2) * weights
     if self._anchorwise_output:
       return anchorwise_smooth_l1norm
@@ -208,7 +239,7 @@ class WeightedSigmoidClassificationLoss(Loss):
   def _compute_loss(self,
                     prediction_tensor,
                     target_tensor,
-                    weights,
+                    weights=None,
                     class_indices=None):
     """Compute loss function.
 
@@ -225,6 +256,8 @@ class WeightedSigmoidClassificationLoss(Loss):
       loss: a (scalar) tensor representing the value of the loss function
             or a float tensor of shape [batch_size, num_anchors]
     """
+    if weights is None:
+      weights = tf.ones(tf.shape(target_tensor)[:2])
     weights = tf.expand_dims(weights, 2)
     if class_indices is not None:
       weights *= tf.reshape(
@@ -236,7 +269,6 @@ class WeightedSigmoidClassificationLoss(Loss):
     if self._anchorwise_output:
       return tf.reduce_sum(per_entry_cross_ent * weights, 2)
     return tf.reduce_sum(per_entry_cross_ent * weights)
-
 
 class WeightedSoftmaxClassificationLoss(Loss):
   """Softmax loss function."""
@@ -250,7 +282,7 @@ class WeightedSoftmaxClassificationLoss(Loss):
     """
     self._anchorwise_output = anchorwise_output
 
-  def _compute_loss(self, prediction_tensor, target_tensor, weights):
+  def _compute_loss(self, prediction_tensor, target_tensor, weights=None):
     """Compute loss function.
 
     Args:
@@ -268,8 +300,56 @@ class WeightedSoftmaxClassificationLoss(Loss):
         labels=tf.reshape(target_tensor, [-1, num_classes]),
         logits=tf.reshape(prediction_tensor, [-1, num_classes])))
     if self._anchorwise_output:
-      return tf.reshape(per_row_cross_ent, tf.shape(weights)) * weights
-    return tf.reduce_sum(per_row_cross_ent * tf.reshape(weights, [-1]))
+      if weights is not None:
+        return tf.reshape(per_row_cross_ent, tf.shape(weights)) * weights
+      else:
+        return per_row_cross_ent
+    else:
+      if weights is not None:
+        return tf.reduce_sum(per_row_cross_ent * tf.reshape(weights, [-1]))
+      else:
+        return tf.reduce_sum(per_row_cross_ent)
+
+
+class WeightedSoftmaxClassificationLoss_v2(Loss):
+  """Softmax loss function."""
+
+  def __init__(self, anchorwise_output=False):
+    """Constructor.
+
+    Args:
+      anchorwise_output: Whether to output loss per anchor (default False)
+
+    """
+    self._anchorwise_output = anchorwise_output
+
+  def _compute_loss(self, prediction_tensor, target_tensor, weights=None):
+    """Compute loss function.
+
+    Args:
+      prediction_tensor: A float tensor of shape [batch_size, num_anchors,
+        num_classes] representing the predicted logits for each class
+      target_tensor: A float tensor of shape [batch_size, num_anchors,
+        num_classes] representing one-hot encoded classification targets
+      weights: a float tensor of shape [batch_size, num_anchors]
+
+    Returns:
+      loss: a (scalar) tensor representing the value of the loss function
+    """
+    num_classes = prediction_tensor.get_shape().as_list()[-1]
+    per_row_cross_ent = (tf.nn.softmax_cross_entropy_with_logits_v2(
+        labels=tf.reshape(target_tensor, [-1, num_classes]),
+        logits=tf.reshape(prediction_tensor, [-1, num_classes])))
+    if self._anchorwise_output:
+      if weights is not None:
+        return tf.reshape(per_row_cross_ent, tf.shape(weights)) * weights
+      else:
+        return per_row_cross_ent
+    else:
+      if weights is not None:
+        return tf.reduce_sum(per_row_cross_ent * tf.reshape(weights, [-1]))
+      else:
+        return tf.reduce_sum(per_row_cross_ent)
 
 
 class BootstrappedSigmoidClassificationLoss(Loss):
@@ -334,7 +414,6 @@ class BootstrappedSigmoidClassificationLoss(Loss):
     if self._anchorwise_output:
       return tf.reduce_sum(per_entry_cross_ent * tf.expand_dims(weights, 2), 2)
     return tf.reduce_sum(per_entry_cross_ent * tf.expand_dims(weights, 2))
-
 
 class HardExampleMiner(object):
   """Hard example mining for regions in a list of images.
@@ -460,12 +539,13 @@ class HardExampleMiner(object):
     for ind, detection_boxlist in enumerate(decoded_boxlist_list):
       box_locations = detection_boxlist.get()
       match = match_list[ind]
-      image_losses = cls_losses[ind]
+      if self._loss_type == 'cls':
+        image_losses = cls_losses[ind]
       if self._loss_type == 'loc':
         image_losses = location_losses[ind]
       elif self._loss_type == 'both':
-        image_losses *= self._cls_loss_weight
-        image_losses += location_losses[ind] * self._loc_loss_weight
+        image_losses = cls_losses[ind] * self._cls_loss_weight \
+                       + location_losses[ind] * self._loc_loss_weight
       if self._num_hard_examples is not None:
         num_hard_examples = self._num_hard_examples
       else:

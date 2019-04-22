@@ -303,14 +303,14 @@ message SSDRandomCropFixedAspectRatioOperation {
 
   // The area of the cropped image must be within the range of
   // [min_area, max_area].
-  optional float min_area = 4;
-  optional float max_area = 5;
+  optional float min_area = 2;
+  optional float max_area = 3;
 
   // Cropped box area ratio must be above this threhold to be kept.
-  optional float overlap_thresh = 6;
+  optional float overlap_thresh = 4;
 
   // Probability a crop operation is skipped.
-  optional float random_coef = 7;
+  optional float random_coef = 5;
 }
 
 // Randomly crops a image to a fixed aspect ratio according to:

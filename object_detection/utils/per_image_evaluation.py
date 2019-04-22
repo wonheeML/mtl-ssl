@@ -20,6 +20,7 @@ a predefined IOU ratio. Non Maximum Supression is used by default. Multi class
 detection is supported by default.
 """
 import numpy as np
+import functools
 
 from object_detection.utils import np_box_list
 from object_detection.utils import np_box_list_ops
@@ -31,8 +32,10 @@ class PerImageEvaluation(object):
   def __init__(self,
                num_groundtruth_classes,
                matching_iou_threshold=0.5,
-               nms_iou_threshold=0.3,
-               nms_max_output_boxes=50):
+               nms_type='standard',
+               nms_iou_threshold=1.0,
+               nms_max_output_boxes=100,
+               soft_nms_sigma=0.5):
     """Initialized PerImageEvaluation by evaluation parameters.
 
     Args:
@@ -43,8 +46,29 @@ class PerImageEvaluation(object):
       nms_max_output_boxes: Number of maximum output boxes in NMS.
     """
     self.matching_iou_threshold = matching_iou_threshold
-    self.nms_iou_threshold = nms_iou_threshold
-    self.nms_max_output_boxes = nms_max_output_boxes
+    self.nms_type = nms_type
+    if nms_type == 'standard':
+      self.nms_fn = functools.partial(
+          np_box_list_ops.non_max_suppression,
+          max_output_size=nms_max_output_boxes,
+          iou_threshold=nms_iou_threshold)
+    elif nms_type == 'soft-linear':
+      self.nms_fn = functools.partial(
+          np_box_list_ops.soft_non_max_suppression,
+          max_output_size=nms_max_output_boxes,
+          iou_threshold=nms_iou_threshold,
+          nms_type=2,
+          sigma=soft_nms_sigma)
+    elif nms_type == 'soft-gaussian':
+      self.nms_fn = functools.partial(
+          np_box_list_ops.soft_non_max_suppression,
+          max_output_size=nms_max_output_boxes,
+          iou_threshold=nms_iou_threshold,
+          nms_type=3,
+          sigma=soft_nms_sigma)
+    else:
+      raise ValueError('Cannot identify NMS type.')
+
     self.num_groundtruth_classes = num_groundtruth_classes
 
   def compute_object_detection_metrics(self, detected_boxes, detected_scores,
@@ -200,8 +224,7 @@ class PerImageEvaluation(object):
       result_tp_fp_labels.append(tp_fp_labels)
     return result_scores, result_tp_fp_labels
 
-  def _remove_invalid_boxes(self, detected_boxes, detected_scores,
-                            detected_class_labels):
+  def _remove_invalid_boxes(self, detected_boxes, detected_scores, detected_class_labels):
     valid_indices = np.logical_and(detected_boxes[:, 0] < detected_boxes[:, 2],
                                    detected_boxes[:, 1] < detected_boxes[:, 3])
     return (detected_boxes[valid_indices, :], detected_scores[valid_indices],
@@ -232,9 +255,7 @@ class PerImageEvaluation(object):
       return np.array([], dtype=float), np.array([], dtype=bool)
     detected_boxlist = np_box_list.BoxList(detected_boxes)
     detected_boxlist.add_field('scores', detected_scores)
-    detected_boxlist = np_box_list_ops.non_max_suppression(
-        detected_boxlist, self.nms_max_output_boxes, self.nms_iou_threshold)
-
+    detected_boxlist = self.nms_fn(boxlist=detected_boxlist)
     scores = detected_boxlist.get_field('scores')
 
     if groundtruth_boxes.size == 0:
