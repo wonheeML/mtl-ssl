@@ -61,9 +61,9 @@ python object_detection/builders/model_builder_test.py
 
 
 # Dataset
-* <a href='data/mscoco/README.md'>MS COCO</a><br>
+* <a href='../data/mscoco/README.md'>MS COCO</a><br>
 
-* <a href='data/voc/README.md'>PASCAL VOC</a><br>
+* <a href='../data/voc/README.md'>PASCAL VOC</a><br>
 
 
 # Model Zoo
