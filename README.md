@@ -3,6 +3,7 @@
 To make better use of given limited labels, we propose a novel object detection approach that takes advantage of both multi-task learning (MTL) and self-supervised learning (SSL).
 We propose a set of auxiliary tasks that help improve the accuracy of object detection. 
 
+[Here is a description of the source code.](object_detection/README.md)
 
 ## Introduction
 
