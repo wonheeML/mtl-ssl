@@ -5,6 +5,20 @@ We propose a set of auxiliary tasks that help improve the accuracy of object det
 
 [Here is a guide to the source code.](object_detection/README.md)
 
+
+## Reference
+
+If you are willing to use this code or cite the paper, please refer the following:
+```bibtex
+@inproceedings{lee2019multi,
+ author = {Wonhee Lee and Joonil Na and Gunhee Kim},
+ title = {Multi-task Self-supervised Object Detection via Recycling of Bounding Box Annotations},
+ booktitle = {Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition},
+ year = {2019}
+}
+```
+
+
 ## Introduction
 
 
