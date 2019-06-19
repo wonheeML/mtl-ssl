@@ -19,6 +19,14 @@ If you are willing to use this code or cite the paper, please refer the followin
 ```
 
 
+### CVPR Poster
+
+<p align="center">
+  <img src="object_detection/g3doc/img/mtl_ssl_detection.png" width=960 height=480>
+</p>
+
+
+
 ## Introduction
 
 
