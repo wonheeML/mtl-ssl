@@ -27,7 +27,7 @@ If you are willing to use this code or cite the paper, please refer the followin
 
 
 
-## Introduction [[presentation pdf](doc/mtl-ssl.pdf)]
+## Introduction [[pdf](doc/mtl-ssl.pdf)]
 
 
 ### Multi-task Learning
