@@ -19,7 +19,7 @@ If you are willing to use this code or cite the paper, please refer the followin
 ```
 
 
-### CVPR Poster [[pdf](doc/cvpr19_poster_v5.pdf)]
+### CVPR Poster [[PPT](doc/cvpr19_mtl_ssl_poster.ppt)][[pdf](doc/cvpr19_mtl_ssl_poster.pdf)]
 
 <p align="center">
   <img src="object_detection/g3doc/img/mtl_ssl_detection.png" width=960 height=480>
@@ -27,7 +27,7 @@ If you are willing to use this code or cite the paper, please refer the followin
 
 
 
-## Introduction [[pdf](doc/mtl-ssl.pdf)]
+## Introduction [[PPT](doc/mtl-ssl.ppt)][[pdf](doc/mtl-ssl.pdf)]
 
 
 ### Multi-task Learning
